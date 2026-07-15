@@ -1,250 +1,162 @@
-# ACE PRO SV08 - Anycubic Color Engine Pro Driver for Klipper
+# fluidd-acepro-card-ACEPROSV08
 
-A comprehensive Klipper driver for the Anycubic Color Engine Pro multi-material unit, optimized for SOVOL SV08 and other Klipper-based 3D printers.
+> 本项目仅适配 `szkrisz/ACEPROSV08` 驱动的单 ACE Pro、四料槽配置。
+> 不兼容 `Kobra-S1/ACEPRO`，请勿混合安装两套驱动。
 
-## 📋 Table of Contents
+这是为 DIY Klipper 打印机准备的 ACE Pro Fluidd 集成包。它把 ACE Pro 的状态、烘干、料槽、库存保存、手动送料/回抽、无限续料和诊断能力放进 Fluidd，同时提供中文独立控制页面 `/ace.html`。
 
-- [Features](#-features)
-- [Hardware Requirements](#-hardware-requirements)
-- [Installation](#-installation)
-- [Configuration](#-configuration)
-- [Commands Reference](#-commands-reference)
-- [Endless Spool Feature](#-endless-spool-feature)
-- [Inventory Management](#-inventory-management)
-- [Hardware Setup](#-hardware-setup)
-- [Contributing](#-contributing)
-- [Credits](#-credits)
+## 兼容性
 
-Base driver fork:
+| 项目 | 当前版本 |
+| --- | --- |
+| ACE 驱动 | `szkrisz/ACEPROSV08`，基线提交 `0311eb3` |
+| Fluidd | 基于 `v1.37.2` 完整源码重新构建 |
+| ACE 数量 | 第一版仅支持 1 台 ACE Pro |
+| 料槽数量 | 4 个 |
+| 语言 | 中文 |
+| 许可证 | GPL-3.0 |
 
-https://github.com/BlackFrogKok/BunnyACE
+## 功能
 
+- Fluidd 仪表盘内嵌 ACE Pro 卡片。
+- 中文 `/ace.html` 独立控制页面。
+- 卡片与独立页面均支持设备状态、上下传感器、烘干、料槽编辑、装卸、换卷、助推、手动送料/回抽、无限续料和传感器诊断。
+- Moonraker 统一 API：`/server/ace/status`、`/server/ace/slots`、`/server/ace/capabilities`、`/server/ace/command`。
+- 严格命令白名单，不允许网页执行任意 G-code。
+- ACEPROSV08 库存指令使用 `ACE_SET_SLOT INDEX=...`，不使用 Kobra-S1 旧写法 `T=...`。
+- 安装、强制安装、卸载、状态检查均通过字符菜单完成。
+- 所有实际写入前都会创建备份；卸载时按“原文件存在或不存在”恢复首次安装前状态，新增文件会移入卸载备份而不会直接删除。
 
-- **Multi-Material Support**: Full 4-slot filament management
-- **Endless Spool**: Automatic filament switching on runout
-- **Persistent State**: Settings and inventory saved across restarts
-- **Feed Assist**: Advanced filament feeding control
-- **Runout Detection**: Dual sensor runout detection system
-- **Inventory Tracking**: Material type, color, and temperature management
-- **Debug Tools**: Comprehensive diagnostic commands
-- **Seamless Integration**: Native Klipper integration
+## 安装
 
-## 🔧 Hardware Requirements
+在打印机 SSH 中执行：
 
-### Required Components
-- **Anycubic Color Engine Pro** multi-material unit
-- **Filament Sensors**: 
-  - Extruder sensor (at splitter exit)
-  - Toolhead sensor (before hotend)
-- **Hotend**: Compatible with filament cutting (recommended)
-
-### Recommended Hardware
-- **Filament Splitter**: [BAMBULAB filament splitter](https://www.printables.com/model/1133951-v4-toolhead-ideal-for-mmu-for-sv08-and-any-voron-g)
-- **Toolhead**: [Nadir extruder for SV08/Voron](https://www.printables.com/model/1133951-v4-toolhead-ideal-for-mmu-for-sv08-and-any-voron-g)
-- **Cutting Mod**: [Mr Goodman BAMBULAB hotend with cutter](https://www.printables.com/model/1099177-sovol-sv08-head-filament-cutting-mod)
-
-## 📦 Installation
-
-### 1. Clone Repository
 ```bash
 cd ~
-git clone https://github.com/szkrisz/ACEPROSV08.git
+git clone --depth 1 https://github.com/Luomo520/fluidd-acepro-card-ACEPROSV08.git
+cd fluidd-acepro-card-ACEPROSV08
+sh ui-installer.sh
 ```
 
-### 2. Create Symbolic Links
+菜单选项：
+
+```text
+1. 安装 / 更新 ACE Pro 界面
+2. 强制安装（跳过驱动和 API 检测）
+3. 卸载界面并恢复安装前版本
+4. 检查安装状态
+5. 退出
+```
+
+强制安装只适合驱动已经存在、但检测 API 暂时失败的场景。它会跳过驱动和 API 检测，但仍会检查文件、创建备份，不会跳过备份。
+
+## 备份与恢复
+
+备份目录：
+
 ```bash
-# Link the driver to Klipper extras
-ln -sf ~/ACEPROSV08/extras/ace.py ~/klipper/klippy/extras/ace.py
-
-# Link the configuration file
-ln -sf ~/ACEPROSV08/ace.cfg ~/printer_data/config/ace.cfg
+~/.local/share/aceprosv08-ui/backups/
 ```
 
-### 3. Update Python Dependencies
+安装器会备份：
+
+- 当前 Fluidd 目录。
+- `moonraker.conf`。
+- 已存在的 `ace_status.py` Moonraker 组件。
+- 已存在的 ACE 独立网页资源。
+
+首次安装备份会作为只读恢复基线。更新和卸载会另外创建新备份，不会覆盖或改写这份基线。
+
+卸载：
+
 ```bash
-# Activate Klipper virtual environment
-source ~/klippy-env/bin/activate
-
-# Update pyserial to version 4.5 or higher
-pip3 install pyserial --upgrade
+cd ~/fluidd-acepro-card-ACEPROSV08
+sh ui-installer.sh --uninstall
 ```
 
-### 4. Update Printer Configuration
-Add to your `printer.cfg`:
+或：
+
+```bash
+sh uninstall.sh
+```
+
+## 更新
+
+```bash
+cd ~/fluidd-acepro-card-ACEPROSV08
+git pull --ff-only
+sh ui-installer.sh
+```
+
+更新前同样会备份当前文件。
+
+## Moonraker 配置
+
+安装器会在 `moonraker.conf` 中追加：
+
 ```ini
-[include ace.cfg]
+[ace_status]
+upper_sensor_name: extruder_sensor
+lower_sensor_name: toolhead_sensor
 ```
 
-## ⚙️ Configuration
+如果你的传感器对象名称不同，请安装后手动修改这两个名称，然后重启 Moonraker。
 
-### Basic Configuration (ace.cfg)
-```ini
-[ace]
-serial: /dev/ttyACM0
-baud: 115200
-extruder_sensor_pin: ^PC2
-toolhead_sensor_pin: ^PC3
-feed_speed: 50
-retract_speed: 50
-toolchange_retract_length: 150
-toolchange_load_length: 630
-toolhead_sensor_to_nozzle: 10
-endless_spool: True
+## API 与命令
+
+前端只调用：
+
+```text
+GET  /server/ace/status
+GET  /server/ace/slots
+GET  /server/ace/capabilities
+POST /server/ace/command
 ```
 
-### Pin Configuration
-![Connector Pinout](/img/connector.png)
+允许的主要命令：
 
-Connect the ACE Pro to a regular USB port and configure the sensor pins according to your board layout.
-
-## 🎯 Commands Reference
-
-### Basic Operations
-| Command | Description | Parameters |
-|---------|-------------|------------|
-| `ACE_CHANGE_TOOL` | Manual tool change | `TOOL=<0-3\|-1>` |
-| `ACE_CHANGE_SPOOL` | Change spool (retract filament back to ACEPRO) | `INDEX=<0-3>` |
-| `ACE_FEED` | Feed filament | `INDEX=<0-3> LENGTH=<mm> [SPEED=<mm/s>]` |
-| `ACE_RETRACT` | Retract filament | `INDEX=<0-3> LENGTH=<mm> [SPEED=<mm/s>]` |
-| `ACE_GET_CURRENT_INDEX` | Get current slot | Returns: `-1, 0, 1, 2, 3` |
-
-### Feed Assist
-| Command | Description | Parameters |
-|---------|-------------|------------|
-| `ACE_ENABLE_FEED_ASSIST` | Enable feed assist | `INDEX=<0-3>` |
-| `ACE_DISABLE_FEED_ASSIST` | Disable feed assist | `INDEX=<0-3>` |
-
-### Inventory Management
-| Command | Description | Parameters |
-|---------|-------------|------------|
-| `ACE_SET_SLOT` | Set slot info | `INDEX=<0-3> COLOR=<R,G,B> MATERIAL=<name> TEMP=<°C>` |
-| `ACE_SET_SLOT` | Set slot empty | `INDEX=<0-3> EMPTY=1` |
-| `ACE_QUERY_SLOTS` | Get all slots | Returns JSON |
-| `ACE_SAVE_INVENTORY` | Save inventory | Manual save trigger |
-
-### Endless Spool
-| Command | Description |
-|---------|-------------|
-| `ACE_ENABLE_ENDLESS_SPOOL` | Enable endless spool |
-| `ACE_DISABLE_ENDLESS_SPOOL` | Disable endless spool |
-| `ACE_ENDLESS_SPOOL_STATUS` | Show endless spool status |
-
-### Diagnostics
-| Command | Description |
-|---------|-------------|
-| `ACE_TEST_RUNOUT_SENSOR` | Test sensor states |
-| `ACE_DEBUG` | Debug ACE communication |
-| `ACE_GET_CURRENT_INDEX` | Get currently loaded slot index |
-
-### Dryer Control
-| Command | Description | Parameters |
-|---------|-------------|------------|
-| `ACE_START_DRYING` | Start dryer | `TEMP=<°C> [DURATION=<minutes>]` |
-| `ACE_STOP_DRYING` | Stop dryer | - |
-
-## 🔄 Endless Spool Feature
-
-The endless spool feature automatically switches to the next available filament slot when runout is detected, enabling continuous printing across multiple spools.
-
-### How It Works
-1. **Runout Detection** → Immediate response (no delay)
-2. **Disable Feed Assist** → Stop feeding from empty slot
-3. **Switch Filament** → Feed from next available slot
-4. **Enable Feed Assist** → Resume normal operation
-5. **Update State** → Save new slot index
-6. **Continue Printing** → Seamless continuation
-
-### Enable/Disable
-```gcode
-# Enable endless spool
-ACE_ENABLE_ENDLESS_SPOOL
-
-# Disable endless spool
-ACE_DISABLE_ENDLESS_SPOOL
-
-# Check status
-ACE_ENDLESS_SPOOL_STATUS
-```
-
-### Behavior
-- **Enabled**: Automatic switching on runout
-- **Disabled**: Print pauses on runout (standard behavior)
-- **No Available Slots**: Print pauses automatically
-
-## 📊 Inventory Management
-
-Track filament materials, colors, and printing temperatures for each slot.
-
-### Set Slot Information
-```gcode
-# Set slot with filament
-ACE_SET_SLOT INDEX=0 COLOR=255,0,0 MATERIAL=PLA TEMP=210
-
-# Set slot as empty
-ACE_SET_SLOT INDEX=1 EMPTY=1
-```
-
-### Query Inventory
-```gcode
-# Get all slots as JSON
+```text
+ACE_SET_SLOT
 ACE_QUERY_SLOTS
-
-# Example response:
-# [
-#   {"status": "ready", "color": [255,0,0], "material": "PLA", "temp": 210},
-#   {"status": "empty", "color": [0,0,0], "material": "", "temp": 0},
-#   {"status": "ready", "color": [0,255,0], "material": "PETG", "temp": 240},
-#   {"status": "empty", "color": [0,0,0], "material": "", "temp": 0}
-# ]
+ACE_SAVE_INVENTORY
+ACE_CHANGE_TOOL
+ACE_CHANGE_SPOOL
+ACE_FEED
+ACE_RETRACT
+ACE_ENABLE_FEED_ASSIST
+ACE_DISABLE_FEED_ASSIST
+ACE_START_DRYING
+ACE_STOP_DRYING
+ACE_ENABLE_ENDLESS_SPOOL
+ACE_DISABLE_ENDLESS_SPOOL
+ACE_GET_CURRENT_INDEX
+ACE_TEST_RUNOUT_SENSOR
 ```
 
-### Persistent Storage
-- Inventory is automatically saved to Klipper's `save_variables`
-- Restored on restart
-- Manual save: `ACE_SAVE_INVENTORY`
+## 截图
 
-## 🔌 Hardware Setup
+![ACE Pro Fluidd 卡片](docs/images/fluidd-acepro-card.png)
 
-### Sensor Installation
-1. **Extruder Sensor**: Install at the splitter exit point
-2. **Toolhead Sensor**: Install before the hotend entry
-3. **Wiring**: Connect sensors to configured pins with pullup resistors
+> 配图为隐私安全的界面结构示意图，实际颜色和间距以 Fluidd 主题及浏览器宽度为准。
 
-### USB Connection
-Connect the ACE Pro unit to your printer's host computer via USB. The driver will automatically detect the device.
+## 构建与验证
 
-### Splitter Configuration
-Use a BAMBULAB-compatible filament splitter for optimal performance with the ACE Pro system.
+本版本已完成：
 
-## 🤝 Contributing
+- Fluidd 全量测试：14 个测试文件、326 项测试通过。
+- Fluidd `vue-tsc --build --noEmit` 类型检查通过。
+- Fluidd 全量 ESLint 检查通过。
+- Fluidd v1.37.2 `vite build` 与 PWA Service Worker 构建通过。
+- Python 3.11 Moonraker API 契约测试 6 项通过，两个 Python 文件编译通过。
+- Bash 语法检查，以及隔离假 `HOME` 中的普通安装、强制更新、卸载恢复测试通过。
 
-Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
+## 故障排查
 
-### Development Setup
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+- Fluidd 没出现卡片：确认你访问的是安装器实际替换的 `FLUIDD_ROOT`，并清除浏览器缓存或 Service Worker。
+- Moonraker 提示 `[ace_status]` 未解析：确认 `~/moonraker/moonraker/components/ace_status.py` 存在，然后重启 Moonraker。
+- 保存颜色后恢复旧值：检查 Moonraker 日志中的具体命令错误；本版本会显示 API 失败，不再把失败结果当作保存成功。
+- API 404：重新运行安装器，或使用强制安装后检查 Moonraker 组件路径。
 
-## 📜 Credits
+## 开源说明
 
-This project is based on excellent work from:
-
-- **[ACEResearch](https://github.com/printers-for-people/ACEResearch.git)** - Original ACE Pro research
-- **[DuckACE](https://github.com/utkabobr/DuckACE.git)** - Base driver implementation
-- **[BunyAce](https://github.com/BlackFrogKok/BunnyACE)** - Base driver fork
-
-## 📄 License
-
-This project is licensed under the same terms as the original projects it's based on.
-
----
-
-**⚠️ Note**: This is a work-in-progress driver. Please test thoroughly and report any issues you encounter.
-
-
-
-
-
-
+本项目基于 GPL-3.0 发布，包含来自 `szkrisz/ACEPROSV08`、`Kobra-S1/ACEPRO` 和 `fluidd-core/fluidd` 的代码、界面与样式迁移。详细来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

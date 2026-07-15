@@ -1,3 +1,4 @@
+import copy
 import serial, threading, time, logging, json, struct, queue, traceback, re
 from serial import SerialException
 import serial.tools.list_ports
@@ -864,7 +865,10 @@ class BunnyAce:
 
 
     def get_status(self, eventtime=None):
-        status = self._info.copy()
+        status = copy.deepcopy(self._info)
+        status['connected'] = self._connected
+        status['feed_assist_index'] = self._feed_assist_index
+        status['max_dryer_temperature'] = self.max_dryer_temperature
         status['endless_spool'] = {
             'enabled': self.endless_spool_enabled,
             'runout_detected': self.endless_spool_runout_detected,
