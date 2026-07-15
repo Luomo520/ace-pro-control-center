@@ -67,6 +67,45 @@ class AceStatusContractTests(unittest.TestCase):
         self.assertTrue(status["sensors"]["upper"]["detected"])
         self.assertFalse(status["sensors"]["lower"]["detected"])
 
+    def test_normalizes_alternate_dryer_status_fields(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "dryer_status": {
+                    "state": "running",
+                    "target_temperature": 50,
+                    "duration_minutes": 240,
+                    "remaining_time": 90,
+                },
+            },
+            {},
+            {},
+            {},
+        )
+
+        self.assertEqual(status["dryer"]["status"], "drying")
+        self.assertEqual(status["dryer"]["target_temperature"], 50)
+        self.assertEqual(status["dryer"]["duration_minutes"], 240)
+        self.assertEqual(status["dryer"]["remaining_minutes"], 90)
+
+    def test_converts_dryer_seconds_reported_as_remaining_time(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "dryer": {
+                    "status": "drying",
+                    "target_temp": 60,
+                    "duration": 240,
+                    "remain_time": 11909,
+                },
+            },
+            {},
+            {},
+            {},
+        )
+
+        self.assertEqual(status["dryer"]["remaining_minutes"], 198)
+
     def test_builds_sv08_inventory_command_with_index(self):
         gcode = ace_status.build_gcode(
             {

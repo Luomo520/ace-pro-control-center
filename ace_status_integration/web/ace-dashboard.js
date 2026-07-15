@@ -176,7 +176,9 @@ createApp({
                 duration: 0,
                 remain_time: 0
             },
-            dryingTemp: ACE_DASHBOARD_CONFIG?.defaults?.dryingTemp || 50,
+            dryingTemp: ACE_DASHBOARD_CONFIG?.defaults?.dryingTemp || 45,
+            dryingTempTouched: false,
+            autoDryingTemp: 45,
             dryingDuration: ACE_DASHBOARD_CONFIG?.defaults?.dryingDuration || 240,
 
             // Slots
@@ -192,8 +194,12 @@ createApp({
             materialOptions: {
                 'PLA': 200,
                 'PETG': 235,
+                'PETCF': 260,
                 'ABS': 240,
+                'ABSCF': 260,
                 'ASA': 245,
+                'PAHTCF': 260,
+                'PEEK': 300,
                 'PVA': 185,
                 'HIPS': 230,
                 'PC': 260,
@@ -464,6 +470,24 @@ createApp({
             }
         },
 
+        dryerTemperatureForMaterial(material) {
+            const normalized = String(material || '').trim().toUpperCase();
+            if (normalized.startsWith('ABS') || normalized.startsWith('PETG')) return 60;
+            if (normalized.startsWith('PAHTCF') || normalized.startsWith('PETCF') || normalized.startsWith('PEEK')) return 60;
+            return 45;
+        },
+
+        syncDryingTemperature() {
+            const activeSlot = this.slots.find(slot => slot.index === this.currentTool || slot.loaded || slot.active);
+            if (!activeSlot || !activeSlot.material) return;
+
+            const nextTemperature = this.dryerTemperatureForMaterial(activeSlot.material);
+            if (!this.dryingTempTouched || this.dryingTemp === this.autoDryingTemp) {
+                this.dryingTemp = nextTemperature;
+                this.autoDryingTemp = nextTemperature;
+            }
+        },
+
         updateStatus(data) {
             if (!data || typeof data !== 'object') {
                 console.warn('Invalid status data:', data);
@@ -670,6 +694,8 @@ createApp({
                     this.feedAssistSlot = -1;
                 }
             }
+
+            this.syncDryingTemperature();
 
             if (ACE_DASHBOARD_CONFIG?.debug) {
                 console.log('Status updated:', {

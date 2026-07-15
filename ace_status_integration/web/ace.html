@@ -42,18 +42,6 @@
                                 <span class="label">{{ t('deviceInfo.model') }}:</span>
                                 <span class="value">{{ deviceStatus.model || t('common.unknown') }}</span>
                             </div>
-                            <div class="info-row">
-                                <span class="label">{{ t('deviceInfo.firmware') }}:</span>
-                                <span class="value">{{ deviceStatus.firmware || t('common.unknown') }}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">{{ t('deviceInfo.bootFirmware') }}:</span>
-                                <span class="value">{{ deviceStatus.boot_firmware || t('common.unknown') }}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">{{ t('deviceInfo.usb') }}:</span>
-                                <span class="value">{{ formatUsbPath(deviceStatus.usb_port, deviceStatus.usb_path) }}</span>
-                            </div>
                         </div>
                         <div class="info-col">
                             <div class="info-row">
@@ -96,7 +84,7 @@
                         <div class="dryer-row inputs">
                             <div class="control-group inline">
                                 <label>{{ t('dryer.inputs.temp') }}</label>
-                                <input type="number" v-model.number="dryingTemp" min="20" max="55" :disabled="dryerStatus.status === 'drying'">
+                                <input type="number" v-model.number="dryingTemp" min="20" max="65" :disabled="dryerStatus.status === 'drying'" @input="dryingTempTouched = true">
                             </div>
                             <div class="control-group inline">
                                 <label>{{ t('dryer.inputs.duration') }}</label>

@@ -62,6 +62,46 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _first_value(mapping: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return default
+
+
+def _normalize_dryer(value: Any) -> Dict[str, Any]:
+    dryer = _as_dict(value)
+    raw_status = str(_first_value(dryer, "status", "state", "mode", default="stop") or "stop").lower()
+    status = {
+        "idle": "stop",
+        "off": "stop",
+        "stopped": "stop",
+        "running": "drying",
+        "active": "drying",
+        "start": "drying",
+    }.get(raw_status, raw_status)
+    target = _safe_int(_first_value(dryer, "target_temp", "target_temperature", "temperature", default=0))
+    duration = _safe_int(_first_value(dryer, "duration", "duration_minutes", default=0))
+    remaining = _safe_int(_first_value(
+        dryer,
+        "remain_time",
+        "remaining_minutes",
+        "remaining_time",
+        default=0,
+    ))
+    if duration > 0 and remaining > duration * 1.5 and remaining > 60:
+        remaining = round(remaining / 60)
+    if status == "stop" and remaining > 0:
+        status = "drying"
+    return {
+        "active": status != "stop",
+        "status": status,
+        "target_temperature": target,
+        "duration_minutes": duration,
+        "remaining_minutes": remaining,
+    }
+
+
 def _parse_inventory(value: Any) -> list[Dict[str, Any]]:
     if isinstance(value, str):
         try:
@@ -106,7 +146,7 @@ def normalize_status(
 ) -> Dict[str, Any]:
     ace = _as_dict(ace)
     variables = _as_dict(variables)
-    dryer = _as_dict(ace.get("dryer"))
+    dryer = _normalize_dryer(_first_value(ace, "dryer", "dryer_status", default={}))
     endless = _as_dict(ace.get("endless_spool"))
     current_tool = _safe_int(variables.get("ace_current_index"), -1)
     slots = _parse_inventory(variables.get("ace_inventory"))
@@ -135,13 +175,7 @@ def normalize_status(
         "temperature": _safe_float(ace.get("temp")),
         "fan_speed": _safe_int(ace.get("fan_speed")),
         "feed_assist_index": _safe_int(ace.get("feed_assist_index"), -1),
-        "dryer": {
-            "active": str(dryer.get("status") or "stop") != "stop",
-            "status": str(dryer.get("status") or "stop"),
-            "target_temperature": _safe_int(dryer.get("target_temp")),
-            "duration_minutes": _safe_int(dryer.get("duration")),
-            "remaining_minutes": _safe_int(dryer.get("remain_time")),
-        },
+        "dryer": dryer,
         "sensors": {
             "upper": _sensor_state(upper, upper_name),
             "lower": _sensor_state(lower, lower_name),

@@ -8,3 +8,5 @@
 *.md text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+manifest.sha256 text eol=lf
+VERSION text eol=lf

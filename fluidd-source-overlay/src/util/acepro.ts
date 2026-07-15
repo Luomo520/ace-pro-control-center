@@ -208,13 +208,15 @@ export function resolveAceProEndlessSpool (printerState: PrinterState): AceProEn
 
 export function resolveAceProDryer (printerState: PrinterState): AceProDryerStatus {
   const acePro = getAceProObject(printerState)
-  const dryer = isObject(acePro?.dryer) ? acePro?.dryer : {}
+  const dryer = isObject(acePro?.dryer)
+    ? acePro?.dryer
+    : isObject(acePro?.dryer_status) ? acePro?.dryer_status : {}
 
   return {
-    status: safeString(dryer.status, 'stop'),
-    target_temp: safeNumber(dryer.target_temp),
-    duration: safeNumber(dryer.duration),
-    remain_time: safeNumber(dryer.remain_time),
+    status: safeString(dryer.status ?? dryer.state, 'stop'),
+    target_temp: safeNumber(dryer.target_temp ?? dryer.target_temperature ?? dryer.temperature),
+    duration: safeNumber(dryer.duration ?? dryer.duration_minutes),
+    remain_time: safeNumber(dryer.remain_time ?? dryer.remaining_minutes ?? dryer.remaining_time),
   }
 }
 

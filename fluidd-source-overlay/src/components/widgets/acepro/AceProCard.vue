@@ -51,14 +51,6 @@
               <strong>{{ aceProState.model || 'Anycubic Color Engine Pro' }}</strong>
             </div>
             <div class="acepro-info-item">
-              <span>固件</span>
-              <strong>{{ aceProState.firmware || '--' }}</strong>
-            </div>
-            <div class="acepro-info-item">
-              <span>启动固件</span>
-              <strong>{{ aceProState.bootFirmware || '--' }}</strong>
-            </div>
-            <div class="acepro-info-item">
               <span>运行状态</span>
               <strong :class="statusClass">{{ statusText }}</strong>
             </div>
@@ -80,10 +72,6 @@
             <div class="acepro-info-item">
               <span>RFID</span>
               <strong>{{ aceProState.rfidEnabled ? '已启用' : '未启用' }}</strong>
-            </div>
-            <div class="acepro-info-item">
-              <span>USB</span>
-              <strong>{{ usbText }}</strong>
             </div>
             <div class="acepro-info-item">
               <span>当前装载</span>
@@ -111,13 +99,6 @@
               <span>无限续料</span>
               <strong>{{ aceProState.endlessSpool.enabled ? '已开启' : '已关闭' }}</strong>
             </div>
-            <div
-              v-if="aceProObjectKey"
-              class="acepro-info-item"
-            >
-              <span>状态对象</span>
-              <strong>{{ aceProObjectKey || '--' }}</strong>
-            </div>
           </div>
         </section>
 
@@ -140,6 +121,7 @@
                   max="65"
                   suffix="°C"
                   :disabled="aceProBusy || aceProDryerActive"
+                  @input="dryerTemperatureTouched = true"
                 />
               </div>
               <div class="acepro-dryer__field">
@@ -164,7 +146,7 @@
               </div>
               <div class="acepro-info-item">
                 <span>目标温度</span>
-                <strong>{{ aceProState.dryer.target_temp || 0 }}°C</strong>
+                <strong>{{ dryerTargetTemperatureText }}</strong>
               </div>
               <div class="acepro-info-item">
                 <span>剩余时间</span>
@@ -375,7 +357,7 @@
 </template>
 
 <script lang="ts">
-import { Component, Mixins, Prop } from 'vue-property-decorator'
+import { Component, Mixins, Prop, Watch } from 'vue-property-decorator'
 import AceProMixin from '@/mixins/acePro'
 import AceProSlotCard from '@/components/widgets/acepro/AceProSlotCard.vue'
 
@@ -390,9 +372,38 @@ export default class AceProCard extends Mixins(AceProMixin) {
 
   dryerTemperature = 45
   dryerDuration = 240
+  dryerTemperatureTouched = false
+  autoDryerTemperature = 45
   manualSlot = 0
   manualLength = 50
   manualSpeed = 25
+
+  mounted () {
+    this.syncDryerTemperature()
+  }
+
+  @Watch('aceProState', { deep: true })
+  onAceProStateChanged () {
+    this.syncDryerTemperature()
+  }
+
+  getDryerTemperatureForMaterial (material: string): number {
+    const normalized = material.trim().toUpperCase()
+    if (normalized.startsWith('ABS') || normalized.startsWith('PETG')) return 60
+    if (normalized.startsWith('PAHTCF') || normalized.startsWith('PETCF') || normalized.startsWith('PEEK')) return 60
+    return 45
+  }
+
+  syncDryerTemperature () {
+    const activeSlot = this.aceProSlots.find(slot => slot.isActive)
+    if (!activeSlot?.material) return
+
+    const nextTemperature = this.getDryerTemperatureForMaterial(activeSlot.material)
+    if (!this.dryerTemperatureTouched || this.dryerTemperature === this.autoDryerTemperature) {
+      this.dryerTemperature = nextTemperature
+      this.autoDryerTemperature = nextTemperature
+    }
+  }
 
   readonly manualSlotOptions = [
     { text: '料槽 1', value: 0 },
@@ -450,12 +461,9 @@ export default class AceProCard extends Mixins(AceProMixin) {
       : `${this.aceProState.humidity}% RH`
   }
 
-  get usbText (): string {
-    if (this.aceProState.usbPort && this.aceProState.usbPath) {
-      return `${this.aceProState.usbPort} (${this.aceProState.usbPath})`
-    }
-
-    return this.aceProState.usbPort || this.aceProState.usbPath || '--'
+  get dryerTargetTemperatureText (): string {
+    const target = Math.round(this.aceProState.dryer.target_temp || 0)
+    return target > 0 ? `${target}°C` : '--'
   }
 
   get remainTimeText (): string {

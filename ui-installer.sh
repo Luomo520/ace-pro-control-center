@@ -2,7 +2,7 @@
 set -eu
 
 APP_NAME="ACEPROSV08 Fluidd UI"
-PANEL_VERSION="0.1.0"
+PANEL_VERSION="0.2.0"
 REPOSITORY_URL="https://github.com/Luomo520/fluidd-acepro-card-ACEPROSV08"
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -103,6 +103,15 @@ require_dir() {
   [ -d "$1" ] || { bad "缺少目录: $1"; return 1; }
 }
 
+fix_fluidd_permissions() {
+  fluidd_root=$1
+  [ -d "$fluidd_root" ] || return 0
+  chmod -R a+rX "$fluidd_root" || {
+    bad "无法设置 Fluidd 文件的 Web 可读权限: $fluidd_root"
+    return 1
+  }
+}
+
 verify_payload() {
   require_dir "$PAYLOAD_FLUIDD"
   require_file "$PAYLOAD_FLUIDD/index.html"
@@ -192,6 +201,7 @@ restore_backup() {
   if [ -f "$backup/present.fluidd" ]; then
     cp -a "$backup/fluidd" "$FLUIDD_ROOT" || return 1
   fi
+  fix_fluidd_permissions "$FLUIDD_ROOT" || return 1
 
   if [ -f "$MOONRAKER_CONF" ]; then
     mkdir -p "$quarantine/moonraker" || return 1
@@ -242,6 +252,7 @@ install_files() {
     mv "$FLUIDD_ROOT" "$backup/replaced-fluidd" || return 1
   fi
   mv "$stage" "$FLUIDD_ROOT" || return 1
+  fix_fluidd_permissions "$FLUIDD_ROOT" || return 1
 
   cp -a "$PAYLOAD_MOONRAKER" "$MOONRAKER_ROOT/moonraker/components/ace_status.py" || return 1
   cp -a "$PAYLOAD_WEB/." "$ACEPRO_ROOT/ace_status_integration/web/" || return 1
