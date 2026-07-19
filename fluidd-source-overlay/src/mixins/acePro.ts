@@ -82,6 +82,20 @@ export default class AceProMixin extends StateMixin {
       this.aceProStatus === 'busy'
   }
 
+  get aceProToolchangeActive (): boolean {
+    return this.aceProState.toolchange.active
+  }
+
+  get aceProToolchangeRecoveryRequired (): boolean {
+    return this.aceProState.toolchange.recoveryRequired
+  }
+
+  get aceProToolchangeCanAcknowledge (): boolean {
+    return this.aceProToolchangeRecoveryRequired &&
+      !this.aceProState.sensors.upper.detected &&
+      !this.aceProState.sensors.lower.detected
+  }
+
   get aceProPrinting (): boolean {
     return this.aceProState.printing
   }
@@ -223,6 +237,31 @@ export default class AceProMixin extends StateMixin {
 
   async unloadCurrentSlot () {
     await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: -1 }, WAIT_QUICK_ACTION, 'ACE_CHANGE_TOOL TOOL=-1')
+  }
+
+  async abortToolchange () {
+    await this.executeAceCommand(
+      'ACE_ABORT_TOOLCHANGE',
+      {},
+      WAIT_QUICK_ACTION,
+      'ACE_ABORT_TOOLCHANGE'
+    )
+    await this.pollAceProApi()
+  }
+
+  async acknowledgeToolchange () {
+    const result = await this.$confirm(
+      '请确认已经人工检查耗材路径，并且上下传感器均显示无料。确认后仍需重新装载耗材。',
+      { title: 'ACE Pro 安全恢复', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result || !this.aceProToolchangeCanAcknowledge) return
+    await this.executeAceCommand(
+      'ACE_ACK_TOOLCHANGE',
+      { CONFIRM: 1 },
+      WAIT_QUICK_ACTION,
+      'ACE_ACK_TOOLCHANGE CONFIRM=1'
+    )
+    await this.pollAceProApi()
   }
 
   async saveInventory () {

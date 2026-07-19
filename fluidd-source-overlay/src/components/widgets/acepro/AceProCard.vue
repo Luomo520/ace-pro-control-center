@@ -39,6 +39,53 @@
         </div>
       </div>
 
+      <v-alert
+        v-if="aceProToolchangeRecoveryRequired"
+        dense
+        outlined
+        type="error"
+        class="acepro-card__recovery"
+      >
+        <div>换料已停止，耗材位置不确定。请检查路径和上下传感器。</div>
+        <div class="acepro-recovery-actions">
+          <app-btn
+            small
+            color="error"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="abortToolchange"
+          >
+            重新发送停止
+          </app-btn>
+          <app-btn
+            small
+            text
+            :disabled="!aceProToolchangeCanAcknowledge"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="acknowledgeToolchange"
+          >
+            确认已安全处理
+          </app-btn>
+        </div>
+      </v-alert>
+      <v-alert
+        v-else-if="aceProToolchangeActive"
+        dense
+        outlined
+        type="warning"
+        class="acepro-card__recovery"
+      >
+        <div>换料进行中：{{ aceProState.toolchange.context.phase || '准备中' }}</div>
+        <app-btn
+          small
+          text
+          color="error"
+          :loading="aceProHasWait(aceProWaitQuickAction)"
+          @click="abortToolchange"
+        >
+          停止换料
+        </app-btn>
+      </v-alert>
+
       <div class="acepro-card__top-grid">
         <section class="acepro-panel">
           <div class="acepro-panel__title">
@@ -771,6 +818,18 @@ export default class AceProCard extends Mixins(AceProMixin) {
 .acepro-card__warning {
   margin: 0;
   font-size: 11px;
+}
+
+.acepro-card__recovery {
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+
+.acepro-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .acepro-quick-actions__switch {

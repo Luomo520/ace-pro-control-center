@@ -68,6 +68,13 @@ export interface AceProResolvedState {
   };
   printing: boolean;
   warnings: string[];
+  toolchange: {
+    active: boolean;
+    context: Record<string, any>;
+    lastError: string;
+    recoveryRequired: boolean;
+    cancelRequested: boolean;
+  };
   endlessSpool: AceProEndlessSpoolState;
   dryer: AceProDryerStatus;
   slots: AceProResolvedSlot[];

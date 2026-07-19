@@ -275,6 +275,13 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
     },
     printing: safeString(printerState.print_stats?.state).toLowerCase() === 'printing',
     warnings: [],
+    toolchange: {
+      active: false,
+      context: {},
+      lastError: '',
+      recoveryRequired: false,
+      cancelRequested: false,
+    },
     endlessSpool: resolveAceProEndlessSpool(printerState),
     dryer: resolveAceProDryer(printerState),
     slots,
@@ -335,6 +342,13 @@ export function resolveAceProApiState (
       },
       printing: safeBoolean(payload.printing, false),
       warnings: resolveWarnings(payload.warnings),
+      toolchange: {
+        active: safeBoolean(payload.toolchange?.active, false),
+        context: isObject(payload.toolchange?.context) ? payload.toolchange.context : {},
+        lastError: safeString(payload.toolchange?.last_error),
+        recoveryRequired: safeBoolean(payload.toolchange?.recovery_required, false),
+        cancelRequested: safeBoolean(payload.toolchange?.cancel_requested, false),
+      },
       endlessSpool: {
         enabled: safeBoolean(endlessSpool.enabled, false),
         runoutDetected: safeBoolean(endlessSpool.runout_detected, false),
@@ -405,6 +419,21 @@ export function resolveAceProApiState (
     },
     printing: safeBoolean(payload.printing, fallback?.printing ?? false),
     warnings: resolveWarnings(payload.warnings),
+    toolchange: {
+      active: safeBoolean(payload.toolchange?.active, fallback?.toolchange.active ?? false),
+      context: isObject(payload.toolchange?.context)
+        ? payload.toolchange.context
+        : (fallback?.toolchange.context ?? {}),
+      lastError: safeString(payload.toolchange?.last_error, fallback?.toolchange.lastError ?? ''),
+      recoveryRequired: safeBoolean(
+        payload.toolchange?.recovery_required,
+        fallback?.toolchange.recoveryRequired ?? false,
+      ),
+      cancelRequested: safeBoolean(
+        payload.toolchange?.cancel_requested,
+        fallback?.toolchange.cancelRequested ?? false,
+      ),
+    },
     endlessSpool: {
       enabled: safeBoolean(manager.endless_spool_enabled, fallback?.endlessSpool.enabled ?? false),
       runoutDetected: safeBoolean(manager.runout_detected, fallback?.endlessSpool.runoutDetected ?? false),

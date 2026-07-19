@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import os
 from typing import Any, Callable, Dict, Mapping, Optional
 
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._+-]{1,24}$")
@@ -148,6 +149,8 @@ def normalize_status(
     variables = _as_dict(variables)
     dryer = _normalize_dryer(_first_value(ace, "dryer", "dryer_status", default={}))
     endless = _as_dict(ace.get("endless_spool"))
+    connection = _as_dict(ace.get("connection"))
+    toolchange = _as_dict(ace.get("toolchange"))
     current_tool = _safe_int(variables.get("ace_current_index"), -1)
     slots = _parse_inventory(variables.get("ace_inventory"))
 
@@ -163,11 +166,32 @@ def normalize_status(
         slot["loaded"] = current_tool == slot["index"]
         slot["active"] = slot["loaded"]
 
-    connected = _safe_bool(ace.get("connected"), bool(ace))
+    connected = _safe_bool(
+        connection.get("connected"),
+        _safe_bool(ace.get("connected"), bool(ace)),
+    )
+    connection_state = str(
+        connection.get("state") or ("connected" if connected else "disconnected")
+    )
+    recovery_required = _safe_bool(
+        toolchange.get("recovery_required"),
+        _safe_bool(connection.get("toolchange_recovery_required")),
+    )
+    warnings = []
+    if recovery_required:
+        warnings.append("换料状态不确定，请检查上下传感器后确认恢复")
+    elif connection_state != "connected":
+        warnings.append("ACE 连接中断，未自动重放物理动作")
+    last_error = str(toolchange.get("last_error") or "").strip()
+    if last_error and last_error not in warnings:
+        warnings.append(last_error)
     return {
         "api_version": 1,
         "driver": "ACEPROSV08",
+        "driver_version": str(ace.get("driver_version") or "unknown"),
         "connected": connected,
+        "connection_state": connection_state,
+        "connection": connection,
         "status": str(ace.get("status") or ("ready" if connected else "offline")),
         "busy": str(ace.get("status") or "").lower() == "busy",
         "stale": False,
@@ -186,10 +210,18 @@ def normalize_status(
             "in_progress": _safe_bool(endless.get("in_progress")),
         },
         "printing": bool(printing),
+        "toolchange": {
+            "active": _safe_bool(toolchange.get("active")),
+            "context": _as_dict(toolchange.get("context")),
+            "last_error": last_error,
+            "recovery_required": recovery_required,
+            "cancel_requested": _safe_bool(toolchange.get("cancel_requested")),
+        },
         "slots": slots,
         "max_dryer_temperature": _safe_int(ace.get("max_dryer_temperature"), 65),
-        "warnings": [],
+        "warnings": warnings,
     }
+
 
 
 def _require_int(params: Mapping[str, Any], key: str, minimum: int, maximum: int) -> int:
@@ -267,6 +299,17 @@ def _build_no_params(command: str) -> Callable[[Mapping[str, Any], int], str]:
     return builder
 
 
+def _build_ack_toolchange(params: Mapping[str, Any], max_dryer_temperature: int = 65) -> str:
+    _reject_unknown(params, {"CONFIRM"})
+    if not _safe_bool(params.get("CONFIRM")):
+        raise AceRequestError(
+            "confirmation_required",
+            "确认恢复必须设置 CONFIRM=1",
+            "params.CONFIRM",
+        )
+    return "ACE_ACK_TOOLCHANGE CONFIRM=1"
+
+
 COMMAND_BUILDERS: Dict[str, Callable[[Mapping[str, Any], int], str]] = {
     "ACE_SET_SLOT": _build_set_slot,
     "ACE_CHANGE_TOOL": _build_change_tool,
@@ -283,6 +326,8 @@ COMMAND_BUILDERS: Dict[str, Callable[[Mapping[str, Any], int], str]] = {
     "ACE_QUERY_SLOTS": _build_no_params("ACE_QUERY_SLOTS"),
     "ACE_GET_CURRENT_INDEX": _build_no_params("ACE_GET_CURRENT_INDEX"),
     "ACE_TEST_RUNOUT_SENSOR": _build_no_params("ACE_TEST_RUNOUT_SENSOR"),
+    "ACE_ABORT_TOOLCHANGE": _build_no_params("ACE_ABORT_TOOLCHANGE"),
+    "ACE_ACK_TOOLCHANGE": _build_ack_toolchange,
 }
 
 
@@ -293,7 +338,10 @@ def build_gcode(payload: Mapping[str, Any], printing: bool = False, connected: b
         raise AceRequestError("invalid_request", "params 必须是对象", "params")
     if command not in COMMAND_BUILDERS:
         raise AceRequestError("unsupported_command", f"不支持的 ACE 命令: {command}", "command")
-    if not connected and command not in {"ACE_QUERY_SLOTS", "ACE_GET_CURRENT_INDEX", "ACE_TEST_RUNOUT_SENSOR"}:
+    if not connected and command not in {
+        "ACE_QUERY_SLOTS", "ACE_GET_CURRENT_INDEX", "ACE_TEST_RUNOUT_SENSOR",
+        "ACE_ABORT_TOOLCHANGE", "ACE_ACK_TOOLCHANGE",
+    }:
         raise AceRequestError("driver_offline", "ACEPROSV08 未连接", status_code=503)
     write_commands = {
         "ACE_SET_SLOT", "ACE_CHANGE_TOOL", "ACE_CHANGE_SPOOL", "ACE_FEED", "ACE_RETRACT",
@@ -312,6 +360,9 @@ class AceStatus:
         self.upper_sensor_name = config.get("upper_sensor_name", DEFAULT_UPPER_SENSOR)
         self.lower_sensor_name = config.get("lower_sensor_name", DEFAULT_LOWER_SENSOR)
         self._last_status: Optional[Dict[str, Any]] = None
+        self.cancel_file = os.path.expanduser(
+            config.get("toolchange_cancel_file", "~/printer_data/comms/aceprosv08-toolchange.cancel")
+        )
 
         self.server.register_endpoint("/server/ace/status", ["GET"], self.handle_status_request)
         self.server.register_endpoint("/server/ace/slots", ["GET"], self.handle_slots_request)
@@ -386,6 +437,19 @@ class AceStatus:
             payload = webrequest.get_args()
             if not isinstance(payload, dict):
                 raise AceRequestError("invalid_request", "请求体必须是 JSON 对象")
+            command = str(payload.get("command") or "").strip().upper()
+            if command == "ACE_ABORT_TOOLCHANGE":
+                parent = os.path.dirname(self.cancel_file)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                with open(self.cancel_file, "a", encoding="ascii"):
+                    pass
+                os.utime(self.cancel_file, None)
+                return {
+                    "success": True,
+                    "command": command,
+                    "request_id": f"ace-cancel-{int(time.time() * 1000)}",
+                }
             status = await self.handle_status_request(webrequest)
             gcode = build_gcode(
                 payload,
