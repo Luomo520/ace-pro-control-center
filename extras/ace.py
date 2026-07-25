@@ -2,7 +2,7 @@ import serial, threading, time, logging, json, struct, queue, traceback, re, cop
 from serial import SerialException
 import serial.tools.list_ports
 
-ACEPROSV08_DRIVER_VERSION = "0.3.0-luomo"
+ACEPROSV08_DRIVER_VERSION = "1.0.0-luomo"
 
 
 class FilamentFeedError(Exception):
@@ -36,6 +36,8 @@ class BunnyAce:
             'feed_approach_speed', min(float(self.feed_speed), 25.), above=0.)
         self.feed_approach_length = config.getfloat(
             'feed_approach_length', 200., minval=0.)
+        self.intermittent_feed = config.getboolean(
+            'intermittent_feed', False)
         self.feed_fast_chunk_length = config.getfloat(
             'feed_fast_chunk_length', 1000., above=0.)
         self.feed_slip_compensation_length = config.getfloat(
@@ -52,6 +54,8 @@ class BunnyAce:
             above=0.)
         self.retract_parking_length = config.getfloat(
             'retract_parking_length', 200., minval=0.)
+        self.intermittent_retract = config.getboolean(
+            'intermittent_retract', False)
         self.toolhead_feed_fast_speed = config.getfloat(
             'toolhead_feed_fast_speed', 8., above=0.)
         self.toolhead_feed_slow_speed = config.getfloat(
@@ -73,6 +77,8 @@ class BunnyAce:
             'toolhead_sensor_max_feed_length', 200., above=0.)
         self.ace_ready_timeout = config.getfloat(
             'ace_ready_timeout', 15., above=0.)
+        self.ace_stop_ready_timeout = config.getfloat(
+            'ace_stop_ready_timeout', 25., above=0.)
         self.ace_request_timeout = config.getfloat(
             'ace_request_timeout', 5., above=0.)
         self.ace_reconnect_timeout = config.getfloat(
@@ -808,7 +814,8 @@ class BunnyAce:
                 pass
         return token
 
-    def wait_ace_ready(self):
+    def wait_ace_ready(self, timeout=None):
+        timeout = self.ace_ready_timeout if timeout is None else float(timeout)
         wait_start = self.reactor.monotonic()
         while self._info['status'] != 'ready':
             if not self._connected:
@@ -816,12 +823,16 @@ class BunnyAce:
                     raise self.printer.command_error('ACE：设备未连接')
                 self._wait_ready_after_reconnect()
                 return
-            if self.reactor.monotonic() - wait_start >= self.ace_ready_timeout:
+            if self.reactor.monotonic() - wait_start >= timeout:
                 raise self.printer.command_error(
                     'ACE：%.1f 秒内未恢复就绪' %
-                    self.ace_ready_timeout)
+                    timeout)
             currTs = self.reactor.monotonic()
             self.reactor.pause(currTs + .5)
+
+    def _motion_stop_ready_timeout(self, length, speed):
+        motion_time = float(length) / float(speed) if speed > 0 else 0.
+        return max(self.ace_stop_ready_timeout, motion_time + 3.)
 
     def _extruder_move(self, length, speed):
         pos = self.toolhead.get_position()
@@ -1126,7 +1137,8 @@ class BunnyAce:
 
             if queued_stop[0] is not None:
                 self._stop_feed(index, token=queued_stop[0])
-                self.wait_ace_ready()
+                self.wait_ace_ready(
+                    timeout=self._motion_stop_ready_timeout(length, speed))
                 return {
                     'code': 0,
                     'stopped_by_sensor': True,
@@ -1145,7 +1157,8 @@ class BunnyAce:
                         and self._sensor_present(stop_sensor)):
                     monitor_stop_sensor()
                     self._stop_feed(index, token=queued_stop[0])
-                    self.wait_ace_ready()
+                    self.wait_ace_ready(
+                        timeout=self._motion_stop_ready_timeout(length, speed))
                     return {
                         'code': 0,
                         'stopped_by_sensor': True,
@@ -1314,7 +1327,13 @@ class BunnyAce:
 
     def _feed_until_sensor(self, tool, sensor_name, total_length, speed,
                            failure_message):
-        """Feed in bounded chunks until a physical sensor confirms arrival."""
+        """Feed until a physical sensor confirms arrival using the configured mode."""
+        if self._sensor_present(sensor_name):
+            return 0.0
+        if not self.intermittent_feed:
+            return self._feed_continuously_until_sensor(
+                tool, sensor_name, total_length, speed, failure_message)
+
         fed = 0.0
         total_length = float(total_length)
         approach_length = min(self.feed_approach_length, total_length)
@@ -1365,10 +1384,74 @@ class BunnyAce:
                 self.dwell(delay=.05)
         return fed
 
+    def _feed_continuously_until_sensor(self, tool, sensor_name,
+                                        total_length, speed,
+                                        failure_message):
+        """Use one main motion request while polling the arrival sensor."""
+        total_length = float(total_length)
+        self._set_toolchange_phase(
+            'ACE_FEED_CONTINUOUS',
+            feed_length=total_length,
+            feed_speed=speed,
+            compensation_used=0.)
+        result = self._feed(
+            tool, total_length, speed, stop_sensor=sensor_name)
+        if result.get('stopped_by_sensor') or self._sensor_present(sensor_name):
+            return total_length
+        if result.get('uncertain'):
+            raise FilamentFeedError(
+                'ACE：连续送料期间连接状态不确定，未重复发送物理动作')
+
+        self.wait_ace_ready()
+        compensation = float(self.feed_slip_compensation_length)
+        if compensation <= 0:
+            raise FilamentFeedError(failure_message % total_length)
+
+        self.gcode.respond_info(
+            'ACE：连续送料 %.1f mm 后上方传感器仍未触发，'
+            '开始一次有限低速补偿送料' % total_length)
+        self._set_toolchange_phase(
+            'ACE_FEED_SLIP_COMPENSATION_CONTINUOUS',
+            feed_length=total_length + compensation,
+            feed_speed=self.feed_slip_compensation_speed,
+            compensation_used=compensation)
+        result = self._feed(
+            tool, compensation, self.feed_slip_compensation_speed,
+            stop_sensor=sensor_name)
+        if result.get('stopped_by_sensor') or self._sensor_present(sensor_name):
+            return total_length + compensation
+        if result.get('uncertain'):
+            raise FilamentFeedError(
+                'ACE：低速补偿送料期间连接状态不确定，未重复发送物理动作')
+        self.wait_ace_ready()
+        message = failure_message % (total_length + compensation)
+        raise FilamentFeedError(
+            '%s；一次连续低速补偿送料 %.1f mm 后仍未触发，'
+            '可能存在打滑或堵料' % (message, compensation))
+
     def _retract_in_chunks(self, index, length, speed, phase):
         remaining = float(length)
         slow_length = min(self.retract_parking_length, remaining)
         fast_remaining = remaining - slow_length
+
+        if not self.intermittent_retract:
+            if fast_remaining > 0:
+                self._set_toolchange_phase(
+                    phase + '_FAST',
+                    retract_remaining=slow_length,
+                    retract_speed=speed)
+                self._retract(index, fast_remaining, speed)
+                self.wait_ace_ready()
+            if slow_length > 0:
+                self._set_toolchange_phase(
+                    phase + '_APPROACH',
+                    retract_remaining=0.,
+                    retract_speed=self.retract_parking_speed)
+                self._retract(
+                    index, slow_length, self.retract_parking_speed)
+                self.wait_ace_ready()
+            return
+
         retracted = 0.0
         while remaining > 0:
             if retracted < fast_remaining:
@@ -1932,6 +2015,9 @@ class BunnyAce:
             'context': context,
             'last_error': self._toolchange_last_error,
         }
+        status['intermittent_feed'] = self.intermittent_feed
+        status['intermittent_retract'] = self.intermittent_retract
+        status['ace_stop_ready_timeout'] = self.ace_stop_ready_timeout
         return status
 
     def cmd_ACE_SET_SLOT(self, gcmd):

@@ -24,6 +24,13 @@
 - 用途：Fluidd 仪表盘源码、布局、构建产物和小组件接入方式。
 - 本项目修改范围：增加 ACE Pro 卡片、页面入口、中文文案和相关构建产物。
 
+## Moonraker
+
+- 仓库：https://github.com/Arksine/moonraker
+- 许可证：GPL-3.0
+- 用途：Fluidd 与 Klipper 之间的 HTTP / WebSocket 服务端接口和组件加载机制。
+- 本项目修改范围：新增独立的 `ace_status` Moonraker 组件，仅暴露 ACEPROSV08 状态和经过白名单校验的控制命令；未修改 Moonraker 上游源码。
+
 ## Vue
 
 - 仓库：https://github.com/vuejs/core
@@ -32,4 +39,4 @@
 
 ## 责任说明
 
-本项目不是 Anycubic、Fluidd 或 Moonraker 官方项目。安装前请备份打印机配置，并确认当前机器安装的是 `szkrisz/ACEPROSV08` 驱动。
+本项目不是 Anycubic、Fluidd、Moonraker 或上游驱动作者的官方项目。安装前请备份打印机配置，并确认当前机器安装的是 `szkrisz/ACEPROSV08` 驱动。

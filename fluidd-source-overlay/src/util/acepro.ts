@@ -427,11 +427,11 @@ export function resolveAceProApiState (
       lastError: safeString(payload.toolchange?.last_error, fallback?.toolchange.lastError ?? ''),
       recoveryRequired: safeBoolean(
         payload.toolchange?.recovery_required,
-        fallback?.toolchange.recoveryRequired ?? false,
+        fallback?.toolchange.recoveryRequired ?? false
       ),
       cancelRequested: safeBoolean(
         payload.toolchange?.cancel_requested,
-        fallback?.toolchange.cancelRequested ?? false,
+        fallback?.toolchange.cancelRequested ?? false
       ),
     },
     endlessSpool: {

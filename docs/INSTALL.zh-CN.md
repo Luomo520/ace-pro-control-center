@@ -1,8 +1,8 @@
-# ACEPROSV08 一体化安装、升级与恢复教程
+# ACEPROSV08 + Fluidd 卡片 v1.0.0 安装、升级与恢复教程
 
 ## 1. 适用范围
 
-本套件仅适配一台 ACE Pro、四料槽和 `szkrisz/ACEPROSV08`。若配置中仍包含 Kobra-S1 专用字段或旧驱动 include，请先停止并清理冲突，不能同时加载两套 `[ace]`。
+本套件基于 `szkrisz/ACEPROSV08`，仅适配一台 ACE Pro 和四个料槽。若配置中仍包含 Kobra-S1 专用字段或旧驱动 include，请先停止并清理冲突，不能同时加载两套 `[ace]`。
 
 安装器会同时处理：
 
@@ -110,6 +110,9 @@ nano ~/printer_data/config/ace.cfg
 - `toolchange_retract_length`
 - `bowden_tube_length`
 - `toolhead_sensor_to_nozzle`
+- `intermittent_feed`：`False` 连续送料，`True` 分段送料
+- `intermittent_retract`：`False` 两阶段连续回抽，`True` 固定距离分段回抽
+- `ace_stop_ready_timeout`：停止送料后等待 ACE 恢复就绪的最短时间
 - `[gcode_macro CUT_TIP]` 内的 X/Y 坐标
 - `_ACE_PRE_TOOLCHANGE` 的停靠位置是否适合本机
 

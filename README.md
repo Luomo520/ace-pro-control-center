@@ -1,131 +1,190 @@
-# fluidd-acepro-card-ACEPROSV08
+# ACE Pro for Fluidd (ACEPROSV08)
 
-> 仅适配 `szkrisz/ACEPROSV08` 的单台 ACE Pro、四料槽方案。
-> 不兼容 `Kobra-S1/ACEPRO`，请勿同时加载两套驱动配置。
+为 DIY Klipper 打印机提供 ACE Pro 单设备四色管理能力，并把控制面板作为原生模块嵌入 Fluidd。
 
-这是面向 DIY Klipper 打印机的一体化 ACE Pro 套件。一个安装器同时部署增强版 ACEPROSV08 驱动、配置模板、Moonraker 受控 API、Fluidd 仪表盘卡片和中文 `/ace.html` 辅助页面。
+本项目不是新的打印机网页，也不会用独立站点替代 Fluidd。安装后，ACE Pro 会出现在 Fluidd 导航和仪表盘中；`/ace.html` 仅作为备用的独立控制入口。
 
-![ACE Pro Fluidd 卡片](docs/images/fluidd-acepro-card.png)
+> [!IMPORTANT]
+> 本项目只适配基于 `szkrisz/ACEPROSV08` 的单台 ACE Pro、四料槽方案，不兼容同时加载 `Kobra-S1/ACEPRO` 驱动。安装前必须停止打印，并确认切刀坐标、传感器名称和耗材路径长度适合自己的机器。
 
-## 版本与兼容性
+## 界面预览
 
-| 项目 | 当前版本 |
+### ACE Pro 卡片
+
+![ACE Pro Fluidd 卡片详细视图](docs/images/acepro-fluidd-card-detail.png)
+
+### Fluidd 完整仪表盘
+
+![ACE Pro 卡片在 Fluidd 仪表盘中的完整视图](docs/images/acepro-fluidd-dashboard-overview.png)
+
+## 项目来源
+
+本仓库是在多个 GPL-3.0 开源项目基础上完成的适配和集成，不是 Anycubic、Fluidd、Moonraker 或上游驱动作者的官方发布。
+
+| 项目 | 许可证 | 本项目中的用途 |
+| --- | --- | --- |
+| [szkrisz/ACEPROSV08](https://github.com/szkrisz/ACEPROSV08) | GPL-3.0 | Klipper ACEPROSV08 驱动、串口协议、G-code 命令和配置结构的基础 |
+| [Kobra-S1/ACEPRO](https://github.com/Kobra-S1/ACEPRO) | GPL-3.0 | 参考网页控制流程、中文交互方式和料卷视觉样式，并改写为 ACEPROSV08 单设备 `INDEX` 指令 |
+| [fluidd-core/fluidd](https://github.com/fluidd-core/fluidd) | GPL-3.0 | Fluidd 页面、仪表盘、导航、构建流程和主题体系 |
+| [Moonraker](https://github.com/Arksine/moonraker) | GPL-3.0 | 在 Fluidd 与 Klipper 驱动之间提供受控状态和命令接口 |
+| [Vue](https://github.com/vuejs/core) | MIT | `/ace.html` 辅助页面运行时 |
+
+详细第三方来源和修改边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## v1.0.0 特色功能
+
+- Fluidd 原生集成：ACE Pro 作为 Fluidd 卡片和导航页面运行，不需要打开另一套管理网站。
+- 四料槽管理：显示并编辑槽位颜色、材料和温度，支持装载、卸载、清空、换卷和库存保存。
+- 双传感器状态：分别显示挤出机上方传感器和下方传感器，避免把“到达挤出机入口”误判为“已经到达喷嘴”。
+- 烘干控制：显示设备温度、目标温度、烘干状态和剩余时间，可直接开始或停止烘干。
+- 手动操作：按槽位设置送料或回抽的距离与速度，并提供辅助送料和无限续料控制。
+- 连续送料：默认取消每 50/100 mm 的固定停顿，主路径和有限打滑补偿分别使用完整请求。
+- 两阶段回抽：默认只执行快速回抽段和慢速停放段，不再每 100 mm 停顿。
+- 动态停止等待：上方传感器触发并停止送料后，按请求时长等待 ACE 恢复 `ready`，避免慢速补偿被普通超时误判。
+- 换料诊断：控制台显示 `TA -> TB`、切刀、工具头回抽、Bowden 回收、上/下传感器送料和失败位置。
+- 断联保护：不盲目重放状态不确定的物理动作；打印中发生故障时优先暂停并保留恢复条件。
+- 事务式安装：安装、更新、卸载和回滚前均建立 `old/` 归档，失败时自动恢复。
+- 中文界面：卡片、辅助页面、安装器、驱动提示和主要文档均使用简体中文。
+
+## 兼容范围
+
+| 项目 | 支持情况 |
 | --- | --- |
-| 套件 | `v0.3.0` |
-| 驱动 | `ACEPROSV08 0.3.0-luomo`，基于 `szkrisz/ACEPROSV08` |
-| Fluidd | 基于 `v1.37.2` 完整源码构建 |
+| 打印机 | DIY Klipper 3D 打印机 |
 | ACE 数量 | 1 台 |
-| 料槽 | 4 个 |
-| 语言 | 简体中文 |
-| 许可证 | GPL-3.0 |
+| 料槽数量 | 4 个，T0-T3 |
+| Klipper 驱动 | 本仓库内置的增强版 `szkrisz/ACEPROSV08` |
+| Moonraker | 使用本仓库内置 `ace_status` 组件 |
+| Fluidd | 已完整测试 `v1.37.2` |
+| 其他 Fluidd 版本 | 安装器会显示升级或降级风险，由用户决定继续或取消 |
+| Kobra-S1/ACEPRO | 不可与本驱动同时加载 |
+| 多台 ACE Pro | v1.0.0 不支持 |
 
-## 主要卖点
+安装卡片时会部署基于 Fluidd `v1.37.2` 构建的完整前端。当前 Fluidd 低于、高于或无法识别该版本时，安装器都会先提示风险，并保留回滚文件。
 
-- 一次安装完整链路，不再分别手动复制 Klipper 驱动、Moonraker 组件和 Fluidd 文件。
-- 每次安装、更新和卸载都先把旧文件移动到带时间戳的 `old/` 归档；失败自动恢复，不直接删除用户文件。
-- 默认更新保留机器现有 `ace.cfg`，新版参数模板单独放在 `~/ACEPROSV08/ace.cfg.example`。
-- 快速送料、末段慢速接近和有限打滑补偿兼顾效率与可靠性；快速阶段不再每 100 mm 停顿。
-- 送料失败暂停打印而不是取消任务，并报告换料方向、失败阶段、已移动距离和传感器状态。
-- ACE 断联恢复采用有界重试和传感器协调，禁止无条件重放不确定的物理动作。
-- Fluidd 卡片与 `/ace.html` 使用同一组白名单 API，库存命令严格采用 ACEPROSV08 的 `INDEX` 参数。
-- 中文显示设备、烘干、四槽库存、上下传感器、装卸、手动送料/回抽、无限续料和诊断状态。
+## 安装前准备
 
-## 驱动更新要点
+1. 停止打印，确认没有正在执行的送料、回抽、切刀或工具切换。
+2. 确认 Klipper、Moonraker 和 Fluidd 已安装并可正常访问。
+3. 确认 ACE Pro 使用稳定的 USB 数据线，并优先使用 `/dev/serial/by-id/...` 串口路径。
+4. 记录上方传感器、下方传感器、切刀坐标和各段耗材路径长度。
+5. 已经可以正常换料的机器，安装时优先选择“保留现有 ace.cfg”。
 
-- ACE 长距离送料：默认快速段 `160 mm/s`，最后 `200 mm` 以 `25 mm/s` 接近上方传感器。
-- 打滑补偿：正常路径结束后最多补偿 `400 mm`，每段 `50 mm`，达到上限立即暂停并提示阶段。
-- 工具头送料：上方传感器触发后先按 `5 mm` 分段送料，再按 `1 mm` 分段寻找下方传感器。
-- 回收优化：默认快速回收 `120 mm/s`，最后 `200 mm` 降至 `25 mm/s` 停放。
-- 换料状态：显示 `TA -> TB`、切刀阶段、回收阶段、送料阶段和最终槽位。
-- 连接恢复：记录连接代次、最后断联原因、换料上下文和恢复状态，避免无限重试。
-- 库存输出：`ACE_QUERY_SLOTS` 使用统一缩进的中文四槽信息。
-- 配置模板：顶部包含路径示意图、必填参数、速度和距离的中文注释。
+可选检查：
 
-完整说明见 [驱动 v0.3.0 更新与调校](docs/DRIVER-v0.3.0.zh-CN.md)。
+```bash
+ls -l /dev/serial/by-id/
+grep -n "include.*ace" ~/printer_data/config/printer.cfg
+grep -Rni "^\[ace\]" ~/printer_data/config
+```
 
-## 快速安装
+## Git 安装
 
-在打印机 SSH 中执行：
+首次安装当前稳定版：
 
 ```bash
 cd ~
-git clone --depth 1 https://github.com/Luomo520/fluidd-acepro-card-ACEPROSV08.git
+git clone --branch v1.0.0 --depth 1 \
+  https://github.com/Luomo520/fluidd-acepro-card-ACEPROSV08.git
 cd fluidd-acepro-card-ACEPROSV08
 sh install.sh
 ```
 
-字符菜单提供：
+跟随仓库最新版本：
 
-```text
-1. 安装 / 更新整套组件（默认：驱动 + 卡片，保留 ace.cfg）
-2. 仅安装 / 更新 ACEPROSV08 驱动和配置
-3. 仅安装 / 更新 Fluidd 卡片和 Moonraker 适配层
-4. 整套安装并使用新版 ace.cfg 模板
-5. 强制整套安装（跳过现有驱动/API 判断）
-6. 回滚到上一次安装前版本
-7. 卸载并恢复首次安装前版本
-8. 检查安装状态
-9. 退出
+```bash
+cd ~
+git clone --depth 1 \
+  https://github.com/Luomo520/fluidd-acepro-card-ACEPROSV08.git
+cd fluidd-acepro-card-ACEPROSV08
+sh install.sh
 ```
 
-默认选择 `1` 会同时安装驱动和卡片。选择 `2` 不修改 Fluidd/Moonraker，选择 `3` 不修改 Klipper 驱动和 `ace.cfg`。只有准备重新标定全部路径、针脚和切刀坐标时才选择 `4`。强制安装不会跳过文件校验、`old/` 归档和失败恢复。
+安装器会显示 Fluidd 版本、驱动版本、安装包版本、ACE API 状态、安装状态和最近归档。
 
-整套安装和仅卡片安装会比较当前 Fluidd 版本与本包测试版本 `v1.37.2`：低版本会提示升级风险，高版本会提示降级风险，无法识别版本也会要求确认。用户取消时不会移动或修改任何目标文件。若安装后发现兼容问题，可执行 `sh ui-installer.sh --rollback-latest` 按最近一次安装范围回滚；首次安装前的完整恢复仍使用卸载选项。
+| 选项 | 作用 |
+| ---: | --- |
+| 1 | 安装或更新整套组件，保留当前 `ace.cfg`，推荐已有配置的机器使用 |
+| 2 | 仅安装或更新 ACEPROSV08 驱动和配置 |
+| 3 | 仅安装或更新 Fluidd 卡片、Moonraker 适配层和辅助页面 |
+| 4 | 整套安装并用新版模板替换 `ace.cfg`，仅用于准备重新标定的机器 |
+| 5 | 强制整套安装，只跳过驱动/API 判断，不跳过校验、备份和失败恢复 |
+| 6 | 回滚到最近一次安装前版本 |
+| 7 | 卸载并恢复首次安装前版本 |
+| 8 | 检查安装状态 |
+| 9 | 退出 |
 
-安装器不会自动重启服务。确认没有打印任务后执行：
+安装器不会自动重启 Klipper 或 Moonraker。确认没有打印任务后执行：
 
 ```bash
 sudo systemctl restart klipper
 sudo systemctl restart moonraker
 ```
 
-然后访问：
+完整安装说明见 [中文安装、升级与恢复教程](docs/INSTALL.zh-CN.md)。
 
-- Fluidd：`http://打印机IP/`
-- 独立辅助页：`http://打印机IP/ace.html`
-- API 状态：`http://打印机IP:7125/server/ace/status`
+## 必填配置
 
-完整步骤见 [安装、升级与恢复教程](docs/INSTALL.zh-CN.md)。
+耗材路径：
 
-## 安装前必查
-
-全新安装后、重启 Klipper 前，必须检查 `~/printer_data/config/ace.cfg`：
-
-1. `serial`：优先使用 `/dev/serial/by-id/...`。
-2. `extruder_sensor_pin`：上方传感器 MCU 针脚。
-3. `toolhead_sensor_pin`：下方传感器 MCU 针脚。
-4. `toolchange_load_length`：ACE 停放位置到上方传感器的最大送料距离。
-5. `toolchange_retract_length`：足以释放公共通道的回收距离。
-6. `bowden_tube_length`：ACE 到汇合点的实际管路长度。
-7. `toolhead_sensor_to_nozzle`：下方传感器到喷嘴的距离。
-8. `CUT_TIP` 坐标：必须按本机切刀位置填写，禁止照抄示例坐标。
-
-## old 归档与卸载
-
-归档位置：
-
-```bash
-~/.local/share/aceprosv08-ui/old/
+```text
+送料：ACE T0-T3 -> 公共管路 -> 上方传感器 -> 挤出机 -> 下方传感器 -> 喷嘴
+回收：喷嘴 <- 下方传感器 <- 挤出机 <- 上方传感器 <- 公共管路 <- ACE
 ```
 
-每个时间戳目录只包含该次安装范围内被移动的文件和路径清单。整套、仅驱动、仅卡片分别保存首次安装基线，互不覆盖；`manifest.txt` 中的 `scope` 记录实际范围。
-
-卸载：
+安装或更新后检查：
 
 ```bash
-cd ~/fluidd-acepro-card-ACEPROSV08
-sh uninstall.sh
+nano ~/printer_data/config/ace.cfg
 ```
 
-卸载前仍会归档当前版本，再恢复首次安装前状态。
+| 参数 | 必须确认的内容 |
+| --- | --- |
+| `serial` | ACE Pro 的 `/dev/serial/by-id/...` 路径 |
+| `extruder_sensor_pin` | 挤出机上方传感器 MCU 引脚 |
+| `toolhead_sensor_pin` | 挤出机下方传感器 MCU 引脚 |
+| `toolchange_load_length` | ACE 停放位置到上方传感器的最大送料距离 |
+| `toolchange_retract_length` | 足以释放公共通道的回抽总距离 |
+| `bowden_tube_length` | ACE 到分料器或汇合点的实际距离 |
+| `toolhead_sensor_to_nozzle` | 下方传感器到喷嘴的送料距离 |
+| `CUT_TIP` 坐标 | 本机切刀的真实 X/Y 位置，禁止直接照抄其他机器 |
 
-只撤销最近一次更新：
+v1.0.0 推荐模式：
 
-```bash
-sh ui-installer.sh --rollback-latest
+```ini
+intermittent_feed: False
+intermittent_retract: False
+ace_ready_timeout: 15
+ace_stop_ready_timeout: 25
 ```
+
+- `intermittent_feed: False`：ACE 长距离送料使用完整请求并实时监测上方传感器。
+- `intermittent_retract: False`：长距离回抽只保留快速段和慢速停放段。
+- `ace_stop_ready_timeout`：停止送料后的最短等待时间；驱动还会按“距离/速度 + 3 秒”动态延长。
+
+全部速度、距离和恢复参数见 [驱动 v1.0.0 更新与调校](docs/DRIVER-v1.0.0.zh-CN.md)。
+
+## 安装后验证
+
+先进行无动作检查：
+
+```text
+http://打印机IP/
+http://打印机IP/ace.html
+http://打印机IP:7125/server/ace/status
+```
+
+推荐测试顺序：
+
+1. 确认 Fluidd 的 ACE Pro 页面可以打开，状态显示“已连接”。
+2. 手动按压上、下传感器，确认两个状态开关分别变化。
+3. 在没有打印任务时，使用较短距离测试单槽送料和回抽。
+4. 空载验证切刀坐标不会撞机。
+5. 最后执行一次完整换料，并观察切刀、回抽、上方触发、挤出机送料和下方触发顺序。
 
 ## 更新
+
+跟随 `main` 的安装目录：
 
 ```bash
 cd ~/fluidd-acepro-card-ACEPROSV08
@@ -133,26 +192,66 @@ git pull --ff-only
 sh install.sh
 ```
 
-选择菜单 `1` 即可保留现有机器参数并更新整套组件。不要用压缩包覆盖旧目录；Git 更新便于核对来源和版本。
+固定在发布标签的浅克隆目录不能直接拉取新主分支，建议重新克隆新标签，或执行：
 
-## 验证
+```bash
+git fetch --tags
+git checkout v1.0.0
+sh install.sh
+```
 
-本版本验证范围：
+更新时选择菜单 `1` 会保留当前 `ace.cfg`，并将新版模板保存为 `~/ACEPROSV08/ace.cfg.example`。
 
-- Fluidd 类型检查通过。
-- Fluidd 14 个测试文件、326 项单元测试通过。
-- ESLint 无错误；有 2 条非阻断格式警告。
-- Fluidd v1.37.2 生产构建和 PWA Service Worker 构建通过。
-- Python 驱动、Moonraker 组件编译和 API 契约测试。
-- Shell 语法、版本取消提示、整套安装、仅驱动、仅卡片、强制更新、`old/` 归档、失败恢复和按范围回滚。
+## 回滚与卸载
 
-## 限制
+每次写入前，安装器会把旧文件移动到：
 
-- 仅支持单台 ACE Pro 和四个料槽。
-- 安装器不会自动执行 `T0`、`T1`、切刀、送料或回抽测试。
-- 模板中的速度和距离是起点，不是所有 DIY 机器的通用标定值。
-- Fluidd 卡片是完整 Fluidd 构建产物，不是浏览器扩展；升级官方 Fluidd 后需重新运行本安装器。
+```text
+~/.local/share/aceprosv08-ui/old/YYYYMMDD-HHMMSS-PID/old/
+```
 
-## 开源说明
+回滚最近一次安装：
 
-本项目依据 GPL-3.0 发布，保留 `szkrisz/ACEPROSV08`、`Kobra-S1/ACEPRO` 和 `fluidd-core/fluidd` 的来源与许可说明。详见 [第三方来源声明](THIRD_PARTY_NOTICES.md)。
+```bash
+sh ui-installer.sh --rollback-latest
+```
+
+卸载并恢复首次安装前状态：
+
+```bash
+sh uninstall.sh
+```
+
+仅恢复驱动或卡片：
+
+```bash
+sh ui-installer.sh --uninstall-driver
+sh ui-installer.sh --uninstall-card
+```
+
+回滚和卸载同样会先归档当前版本，不会直接删除用户文件。完成后需要在无打印任务时重启 Klipper 和 Moonraker。
+
+## 常见问题
+
+- Fluidd 页面空白：先使用菜单 `6` 回滚，再检查 Fluidd 版本、Nginx 文件权限和浏览器 Service Worker 缓存。
+- 卡片没有出现：确认安装时包含卡片范围，并重启 Moonraker；检查 `[ace_status]` 是否成功解析。
+- `/server/ace/status` 返回 404：确认 `ace_status.py` 已安装到 Moonraker 组件目录并完成 Moonraker 重启。
+- 驱动启动失败：检查重复 `[ace]`、重复宏、串口路径和两个传感器引脚。
+- 送料每固定距离停顿：确认 `intermittent_feed: False`。
+- 回抽每 100 mm 停顿：确认 `intermittent_retract: False`。
+- 停止送料后提示未恢复就绪：检查 `ace_stop_ready_timeout`，并确认 ACE 固件、USB 和物理送料已经停止。
+- 颜色或材料保存后恢复旧值：检查 Moonraker API 返回值以及 `saved_variables.cfg` 是否可写。
+
+## 文档
+
+- [安装、升级与恢复教程](docs/INSTALL.zh-CN.md)
+- [驱动参数与换料调校](docs/DRIVER-v1.0.0.zh-CN.md)
+- [更新日志](CHANGELOG.md)
+- [第三方来源声明](THIRD_PARTY_NOTICES.md)
+- [GPL-3.0 许可证](LICENSE)
+
+## 许可证与责任
+
+本项目使用 [GNU GPL v3.0](LICENSE) 发布。分发修改版本时必须保留对应源代码、许可证和上游来源说明。
+
+本项目是社区适配项目，不代表 Anycubic、Fluidd、Moonraker 或任何上游仓库提供官方支持。安装者需要自行确认机械结构、切刀位置、传感器逻辑和耗材路径；错误配置可能导致堵料、磨料、撞机或打印失败。

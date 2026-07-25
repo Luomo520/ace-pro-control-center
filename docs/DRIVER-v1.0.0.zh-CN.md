@@ -1,4 +1,4 @@
-# ACEPROSV08 增强驱动 v0.3.0 更新与调校
+# ACEPROSV08 增强驱动 v1.0.0 更新与调校
 
 ## 更新目标
 
@@ -17,13 +17,21 @@
 
 | 参数 | 默认值 | 作用 |
 | --- | ---: | --- |
+| `intermittent_feed` | False | False 连续送料；True 分段送料 |
 | `feed_fast_speed` | 160 | 长管快速送料速度，单位 mm/s |
-| `feed_approach_length` | 200 | 总路程最后 200 mm 进入慢速阶段 |
+| `feed_approach_length` | 200 | 断续模式下，最后 200 mm 进入慢速阶段 |
 | `feed_approach_speed` | 25 | 接近上方传感器的速度 |
-| `feed_fast_chunk_length` | 1000 | 快速请求分段，避免每 100 mm 停顿 |
+| `feed_fast_chunk_length` | 1000 | 断续模式的快速请求分段长度 |
 | `feed_slip_compensation_length` | 400 | 传感器未触发时允许的最大补偿 |
-| `feed_slip_compensation_chunk` | 50 | 每次补偿距离 |
+| `feed_slip_compensation_chunk` | 50 | 断续模式的每次补偿距离 |
 | `feed_slip_compensation_speed` | 25 | 补偿送料速度 |
+| `ace_stop_ready_timeout` | 25 | 停止送料后等待 ACE 恢复 ready 的最短时间 |
+
+连续模式下，主路径只发送一条完整距离请求，驱动在执行期间持续监测上方传感器；主路径结束仍未触发时，只再发送一次完整的有限低速补偿。连续模式不会在最后 200 mm 切换速度，因此没有请求切换造成的停顿。
+
+上方传感器触发后，驱动先发送停止送料，再按 `max(ace_stop_ready_timeout, 当前请求距离/速度 + 3 秒)` 等待 ACE 恢复 `ready`。普通命令仍使用 `ace_ready_timeout`，两类超时互不混用。
+
+断续模式下，驱动按 `feed_fast_chunk_length` 快速送料，最后 `feed_approach_length` 按 `ace_motion_chunk_length` 慢速送料，并按 `feed_slip_compensation_chunk` 分段补偿。它更保守，但每个请求结束后都要等待 ACE 回到 `ready`，会产生可见停顿。
 
 调校原则：先准确测量 `toolchange_load_length`，再给少量打滑余量。若总是用完 400 mm 补偿才触发，应检查压料轮、耗材阻力和管路，而不是继续放大补偿上限。
 
@@ -43,10 +51,13 @@
 
 | 参数 | 默认值 | 作用 |
 | --- | ---: | --- |
+| `intermittent_retract` | False | False 两阶段连续回抽；True 固定距离分段回抽 |
 | `retract_fast_speed` | 120 | 长距离快速回收速度 |
 | `retract_parking_length` | 200 | 回收最后 200 mm 降速 |
 | `retract_parking_speed` | 25 | 停放前慢速 |
 | `toolchange_retract_length` | 需实测 | 完整释放公共通道所需总距离 |
+
+`intermittent_retract: False` 时，驱动把总距离拆成一个快速段和最后一个慢速停放段。例如总长 `1200 mm`、停放段 `200 mm` 时，只执行 `1000 mm @ 120 mm/s` 和 `200 mm @ 25 mm/s` 两个请求。设置为 `True` 后，两个阶段继续按 `ace_motion_chunk_length` 分段，兼容需要频繁释放电机压力的设备。
 
 ## 失败行为
 
