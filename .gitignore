@@ -6,3 +6,4 @@ __pycache__/
 .build/
 .superpowers/
 test-results/
+release-assets-v*/
