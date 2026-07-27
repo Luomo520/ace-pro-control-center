@@ -52,9 +52,15 @@ def calibration_is_valid(record, bowden_tube_length, parking_margin,
         if abs(float(record.get('parking_margin'))
                - float(parking_margin)) > 1e-6:
             return False
+        feed_upper_bound = float(record.get('feed_upper_bound'))
+        parking_distance = float(record.get('parking_distance'))
+        expected_parking = (
+            feed_upper_bound - float(bowden_tube_length)
+            + float(parking_margin))
         return (
-            float(record.get('feed_upper_bound')) > 0
-            and float(record.get('parking_distance')) > 0)
+            feed_upper_bound > 0
+            and parking_distance > 0
+            and abs(parking_distance - expected_parking) <= 1e-6)
     except (TypeError, ValueError):
         return False
 
@@ -188,6 +194,7 @@ class BunnyAce:
         self._calibration_preview = None
         self._calibration_phase = 'idle'
         self._calibration_last_error = ''
+        self._motion_owner = None
         self._load_calibration_record()
 
         self.max_dryer_temperature = config.getint('max_dryer_temperature', 55)
@@ -385,6 +392,18 @@ class BunnyAce:
         self.gcode.register_command(
             'ACE_ABORT_TOOLCHANGE', self.cmd_ACE_ABORT_TOOLCHANGE,
             desc=self.cmd_ACE_ABORT_TOOLCHANGE_help)
+        self.gcode.register_command(
+            'ACE_CALIBRATE_FEED', self.cmd_ACE_CALIBRATE_FEED,
+            desc=self.cmd_ACE_CALIBRATE_FEED_help)
+        self.gcode.register_command(
+            'ACE_CALIBRATE_RETRACT', self.cmd_ACE_CALIBRATE_RETRACT,
+            desc=self.cmd_ACE_CALIBRATE_RETRACT_help)
+        self.gcode.register_command(
+            'ACE_CALIBRATION_SAVE', self.cmd_ACE_CALIBRATION_SAVE,
+            desc=self.cmd_ACE_CALIBRATION_SAVE_help)
+        self.gcode.register_command(
+            'ACE_CALIBRATION_CANCEL', self.cmd_ACE_CALIBRATION_CANCEL,
+            desc=self.cmd_ACE_CALIBRATION_CANCEL_help)
 
     def _load_slot_positions(self):
         saved = self.variables.get('ace_slot_positions')
@@ -459,6 +478,275 @@ class BunnyAce:
         self.calibration_valid = True
         self._save_json_variable(
             'ace_calibration', self.calibration_record)
+
+    def _print_state(self):
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats is None:
+            return 'unknown'
+        try:
+            return str(print_stats.get_status(
+                self.reactor.monotonic()).get('state') or '').lower()
+        except Exception:
+            return 'unknown'
+
+    def _acquire_motion(self, owner):
+        if self._motion_owner is not None:
+            raise RuntimeError(
+                'ACE：%s 正在运行，不能同时启动 %s' % (
+                    self._motion_owner, owner))
+        self._motion_owner = owner
+
+    def _release_motion(self, owner):
+        if self._motion_owner == owner:
+            self._motion_owner = None
+
+    def _require_calibration_preflight(self):
+        state = self._print_state()
+        if state in ('printing', 'paused'):
+            raise RuntimeError('ACE：打印或暂停期间禁止距离标定')
+        if not self._connected or self._info.get('status') != 'ready':
+            raise RuntimeError('ACE：设备未连接或尚未就绪')
+        if (self._sensor_present('extruder_sensor')
+                or self._sensor_present('toolhead_sensor')):
+            raise RuntimeError('ACE：标定前上下传感器必须均无料')
+
+    def _save_current_index(self, index):
+        self.variables['ace_current_index'] = int(index)
+        self.gcode.run_script_from_command(
+            'SAVE_VARIABLE VARIABLE=ace_current_index VALUE=%d' % int(index))
+
+    def _calibrate_feed(self, index):
+        max_distance = (
+            float(self.toolchange_load_length)
+            + float(self.feed_slip_compensation_length))
+        completed = 0.
+        self._calibration_preview = None
+        self._calibration_phase = 'feeding'
+        self._calibration_last_error = ''
+        try:
+            while completed < max_distance:
+                if self._sensor_present('extruder_sensor'):
+                    upper_bound = completed
+                    break
+                step = min(
+                    float(self.calibration_chunk_length),
+                    max_distance - completed)
+                result = self._feed(
+                    index, step, self.calibration_speed,
+                    stop_sensor='extruder_sensor')
+                if result.get('uncertain'):
+                    raise RuntimeError(
+                        'ACE：标定送料连接状态不确定，未重放该分段')
+                triggered = (
+                    result.get('stopped_by_sensor')
+                    or self._sensor_present('extruder_sensor'))
+                if triggered:
+                    upper_bound = completed + step
+                    break
+                completed += step
+                self.wait_ace_ready()
+            else:
+                raise FilamentFeedError(
+                    'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发'
+                    % max_distance)
+
+            if upper_bound <= 0:
+                raise RuntimeError('ACE：上方传感器在送料前已触发')
+            parking_distance = calculate_parking_distance(
+                upper_bound,
+                self.bowden_tube_length,
+                self.five_way_parking_margin,
+                max_distance)
+            preview = {
+                'phase': 'feed_complete',
+                'source_slot': int(index),
+                'feed_completed': completed,
+                'feed_upper_bound': upper_bound,
+                'parking_distance': parking_distance,
+                'bowden_tube_length': float(self.bowden_tube_length),
+                'parking_margin': float(self.five_way_parking_margin),
+            }
+            self._calibration_preview = preview
+            self._calibration_phase = 'feed_complete'
+            self._set_slot_position(index, 'upper_sensor')
+            self._save_current_index(index)
+            return copy.deepcopy(preview)
+        except Exception as exc:
+            self._calibration_preview = None
+            self._calibration_phase = 'failed'
+            self._calibration_last_error = str(exc)
+            self._set_slot_position(index, 'unknown', persist=False)
+            raise
+
+    cmd_ACE_CALIBRATE_FEED_help = (
+        'Calibrate shared ACE feed distance - INDEX= CONFIRM=1')
+
+    def cmd_ACE_CALIBRATE_FEED(self, gcmd):
+        index = gcmd.get_int('INDEX')
+        if index < 0 or index >= 4:
+            raise gcmd.error('ACE：槽位编号必须为 0-3')
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：将使用 T%d 以 %.1f mm/s 分段送料；确认后请执行 '
+                'ACE_CALIBRATE_FEED INDEX=%d CONFIRM=1' % (
+                    index, self.calibration_speed, index))
+            return
+        try:
+            self._require_calibration_preflight()
+            self._acquire_motion('距离送料标定')
+            preview = self._calibrate_feed(index)
+            gcmd.respond_info(
+                'ACE：送料标定完成，已确认 %.1f mm，上界 %.1f mm；'
+                '请确认后执行回料标定' % (
+                    preview['feed_completed'],
+                    preview['feed_upper_bound']))
+        except Exception as exc:
+            raise gcmd.error(str(exc))
+        finally:
+            self._release_motion('距离送料标定')
+
+    cmd_ACE_CALIBRATE_RETRACT_help = (
+        'Calibrate shared ACE retract distance - CONFIRM=1')
+
+    def _calibrate_retract(self):
+        preview = self._calibration_preview
+        if (not isinstance(preview, dict)
+                or preview.get('phase') != 'feed_complete'):
+            raise RuntimeError('ACE：请先完成送料标定')
+        index = int(preview['source_slot'])
+        target = float(preview['parking_distance'])
+        retracted = 0.
+        sensor_clear_completed = None
+        sensor_clear_upper_bound = None
+        self._calibration_phase = 'retracting'
+        self._calibration_last_error = ''
+        try:
+            if not self._sensor_present('extruder_sensor'):
+                raise RuntimeError('ACE：回料标定开始前上方传感器必须有料')
+            if self._sensor_present('toolhead_sensor'):
+                raise RuntimeError('ACE：回料标定前下方传感器必须无料')
+
+            while self._sensor_present('extruder_sensor'):
+                remaining = target - retracted
+                if remaining <= 0:
+                    raise RuntimeError(
+                        'ACE：达到估算停车距离后上方传感器仍未解除')
+                step = min(float(self.calibration_chunk_length), remaining)
+                result = self._retract(index, step, self.calibration_speed)
+                if result.get('uncertain'):
+                    raise RuntimeError(
+                        'ACE：标定回料连接状态不确定，未重放该分段')
+                if not self._sensor_present('extruder_sensor'):
+                    sensor_clear_completed = retracted
+                    sensor_clear_upper_bound = retracted + step
+                retracted += step
+                self.wait_ace_ready()
+
+            if sensor_clear_upper_bound is None:
+                raise RuntimeError('ACE：未能记录上方传感器解除距离')
+
+            while retracted < target:
+                remaining = target - retracted
+                chunk = (
+                    self.calibration_final_chunk_length
+                    if remaining <= 20. else self.calibration_chunk_length)
+                step = min(float(chunk), remaining)
+                result = self._retract(index, step, self.calibration_speed)
+                if result.get('uncertain'):
+                    raise RuntimeError(
+                        'ACE：停车回料连接状态不确定，未重放该分段')
+                retracted += step
+                self.wait_ace_ready()
+
+            if (self._sensor_present('extruder_sensor')
+                    or self._sensor_present('toolhead_sensor')):
+                raise RuntimeError('ACE：回料结束后上下传感器未全部清除')
+
+            preview.update({
+                'phase': 'retract_complete',
+                'sensor_clear_completed': sensor_clear_completed,
+                'sensor_clear_upper_bound': sensor_clear_upper_bound,
+                'sensor_clear_distance': sensor_clear_upper_bound,
+                'retract_distance': retracted,
+            })
+            self._calibration_preview = preview
+            self._calibration_phase = 'retract_complete'
+            self._set_slot_position(
+                index, 'preload_parked_estimated')
+            self._save_current_index(-1)
+            return copy.deepcopy(preview)
+        except Exception as exc:
+            self._calibration_preview = None
+            self._calibration_phase = 'failed'
+            self._calibration_last_error = str(exc)
+            self._set_slot_position(index, 'unknown', persist=False)
+            raise
+
+    def cmd_ACE_CALIBRATE_RETRACT(self, gcmd):
+        preview = self._calibration_preview
+        if (not isinstance(preview, dict)
+                or preview.get('phase') != 'feed_complete'):
+            raise gcmd.error('ACE：请先完成送料标定')
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：将把 T%d 回收到估算预停放位置 %.1f mm；'
+                '确认后请执行 ACE_CALIBRATE_RETRACT CONFIRM=1' % (
+                    preview['source_slot'], preview['parking_distance']))
+            return
+        try:
+            state = self._print_state()
+            if state in ('printing', 'paused'):
+                raise RuntimeError('ACE：打印或暂停期间禁止距离标定')
+            if not self._connected or self._info.get('status') != 'ready':
+                raise RuntimeError('ACE：设备未连接或尚未就绪')
+            self._acquire_motion('距离回料标定')
+            result = self._calibrate_retract()
+            gcmd.respond_info(
+                'ACE：回料标定完成，上方传感器解除上界 %.1f mm，'
+                '估算停车距离 %.1f mm；请确认后保存' % (
+                    result['sensor_clear_upper_bound'],
+                    result['retract_distance']))
+        except Exception as exc:
+            raise gcmd.error(str(exc))
+        finally:
+            self._release_motion('距离回料标定')
+
+    cmd_ACE_CALIBRATION_SAVE_help = (
+        'Save the completed ACE calibration preview - CONFIRM=1')
+
+    def cmd_ACE_CALIBRATION_SAVE(self, gcmd):
+        preview = self._calibration_preview
+        if (not isinstance(preview, dict)
+                or preview.get('phase') != 'retract_complete'):
+            raise gcmd.error('ACE：请先完成送料和回料标定')
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：待保存送料上界 %.1f mm、停车距离 %.1f mm；'
+                '确认后请执行 ACE_CALIBRATION_SAVE CONFIRM=1' % (
+                    preview['feed_upper_bound'],
+                    preview['parking_distance']))
+            return
+        record = copy.deepcopy(preview)
+        record.update({
+            'format_version': CALIBRATION_FORMAT_VERSION,
+            'valid': True,
+            'measured_at': time.time(),
+        })
+        try:
+            self._save_calibration_record(record)
+        except Exception as exc:
+            raise gcmd.error(str(exc))
+        self._calibration_phase = 'saved'
+        self._calibration_preview['phase'] = 'saved'
+        gcmd.respond_info('ACE：距离标定结果已保存')
+
+    cmd_ACE_CALIBRATION_CANCEL_help = 'Discard the in-memory calibration preview'
+
+    def cmd_ACE_CALIBRATION_CANCEL(self, gcmd):
+        self._calibration_preview = None
+        self._calibration_phase = 'idle'
+        self._calibration_last_error = ''
+        gcmd.respond_info('ACE：已取消未保存的距离标定结果')
 
 
     def _calc_crc(self, buffer):

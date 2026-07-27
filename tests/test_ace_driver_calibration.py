@@ -27,9 +27,57 @@ SPEC.loader.exec_module(ace_driver)
 class FakeGcode:
     def __init__(self):
         self.scripts = []
+        self.messages = []
 
     def run_script_from_command(self, script):
         self.scripts.append(script)
+
+    def respond_info(self, message):
+        self.messages.append(message)
+
+
+class FakeGcmd:
+    def __init__(self, values=None):
+        self.values = values or {}
+        self.messages = []
+
+    def get_int(self, name, default=None, **_kwargs):
+        value = self.values.get(name, default)
+        if value is None:
+            raise ValueError("missing %s" % name)
+        return int(value)
+
+    def respond_info(self, message):
+        self.messages.append(message)
+
+    def error(self, message):
+        return RuntimeError(message)
+
+
+class FakePrintStats:
+    def __init__(self, state="standby"):
+        self.state = state
+
+    def get_status(self, _eventtime):
+        return {"state": self.state}
+
+
+class FakeReactor:
+    def monotonic(self):
+        return 0.0
+
+
+class FakePrinter:
+    def __init__(self, print_state="standby"):
+        self.print_stats = FakePrintStats(print_state)
+
+    def lookup_object(self, name, default=None):
+        if name == "print_stats":
+            return self.print_stats
+        return default
+
+    def command_error(self, message):
+        return RuntimeError(message)
 
 
 def make_state_ace(current_index=-1, legacy_position=None, saved_positions=None):
@@ -49,6 +97,63 @@ def make_calibration_data_ace(record=None, bowden=190.0, margin=20.0):
     ace.five_way_parking_margin = margin
     if record is not None:
         ace.variables["ace_calibration"] = json.dumps(record)
+    return ace
+
+
+def make_motion_ace(trigger_after_feed_calls=2):
+    ace = make_calibration_data_ace(bowden=10.0, margin=2.0)
+    ace._load_slot_positions()
+    ace.printer = FakePrinter()
+    ace.reactor = FakeReactor()
+    ace._connected = True
+    ace._info = {"status": "ready"}
+    ace._motion_owner = None
+    ace._calibration_preview = None
+    ace._calibration_phase = "idle"
+    ace._calibration_last_error = ""
+    ace.calibration_speed = 25.0
+    ace.calibration_chunk_length = 5.0
+    ace.calibration_final_chunk_length = 2.0
+    ace.toolchange_load_length = 20.0
+    ace.feed_slip_compensation_length = 0.0
+    ace.feed_lengths = []
+
+    def sensor_present(name):
+        if name == "extruder_sensor":
+            return len(ace.feed_lengths) >= trigger_after_feed_calls
+        return False
+
+    ace._sensor_present = sensor_present
+    ace._feed = lambda _index, length, _speed, stop_sensor=None: (
+        ace.feed_lengths.append(float(length)) or {})
+    ace.wait_ace_ready = lambda timeout=None: None
+    return ace
+
+
+def make_retract_motion_ace(clear_after_distance=7.0):
+    ace = make_motion_ace(trigger_after_feed_calls=99)
+    ace._calibration_preview = {
+        "phase": "feed_complete",
+        "source_slot": 0,
+        "feed_completed": 15.0,
+        "feed_upper_bound": 20.0,
+        "parking_distance": 12.0,
+        "bowden_tube_length": 10.0,
+        "parking_margin": 2.0,
+    }
+    ace._calibration_phase = "feed_complete"
+    ace.slot_positions[0] = "upper_sensor"
+    ace.variables["ace_current_index"] = 0
+    ace.retract_lengths = []
+
+    def sensor_present(name):
+        if name == "extruder_sensor":
+            return sum(ace.retract_lengths) < clear_after_distance
+        return False
+
+    ace._sensor_present = sensor_present
+    ace._retract = lambda _index, length, _speed: (
+        ace.retract_lengths.append(float(length)) or {})
     return ace
 
 
@@ -161,6 +266,12 @@ class AceCalibrationDataTests(unittest.TestCase):
         self.assertTrue(
             ace_driver.calibration_is_valid(record, 190.0, 20.0, 1))
 
+    def test_calibration_rejects_tampered_parking_distance(self):
+        record = make_calibration_record(parking_distance=999.0)
+
+        self.assertFalse(
+            ace_driver.calibration_is_valid(record, 190.0, 20.0, 1))
+
     def test_valid_saved_record_is_loaded(self):
         record = make_calibration_record()
         ace = make_calibration_data_ace(record=record)
@@ -199,6 +310,97 @@ class AceCalibrationDataTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             ace._save_calibration_record(make_calibration_record())
+
+
+class AceCalibrationMotionTests(unittest.TestCase):
+    def test_calibrate_feed_without_confirm_only_previews(self):
+        ace = make_motion_ace()
+        gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": 0})
+
+        ace.cmd_ACE_CALIBRATE_FEED(gcmd)
+
+        self.assertEqual(ace.feed_lengths, [])
+        self.assertTrue(any("CONFIRM=1" in message
+                            for message in gcmd.messages))
+
+    def test_calibrate_feed_counts_completed_chunks_and_upper_bound(self):
+        ace = make_motion_ace(trigger_after_feed_calls=2)
+
+        preview = ace._calibrate_feed(0)
+
+        self.assertEqual(ace.feed_lengths, [5.0, 5.0])
+        self.assertEqual(preview["feed_completed"], 5.0)
+        self.assertEqual(preview["feed_upper_bound"], 10.0)
+        self.assertEqual(preview["phase"], "feed_complete")
+        self.assertEqual(ace.slot_positions[0], "upper_sensor")
+
+    def test_uncertain_feed_discards_preview_and_does_not_retry_chunk(self):
+        ace = make_motion_ace(trigger_after_feed_calls=99)
+
+        def uncertain_feed(_index, length, _speed, stop_sensor=None):
+            ace.feed_lengths.append(float(length))
+            return {"uncertain": True}
+
+        ace._feed = uncertain_feed
+
+        with self.assertRaises(RuntimeError):
+            ace._calibrate_feed(0)
+
+        self.assertEqual(ace.feed_lengths, [5.0])
+        self.assertIsNone(ace._calibration_preview)
+        self.assertEqual(ace.slot_positions[0], "unknown")
+
+    def test_calibrate_retract_without_confirm_only_previews(self):
+        ace = make_retract_motion_ace()
+        gcmd = FakeGcmd({"CONFIRM": 0})
+
+        ace.cmd_ACE_CALIBRATE_RETRACT(gcmd)
+
+        self.assertEqual(ace.retract_lengths, [])
+        self.assertTrue(any("CONFIRM=1" in message
+                            for message in gcmd.messages))
+
+    def test_calibrate_retract_records_sensor_clear_and_parking_distance(self):
+        ace = make_retract_motion_ace(clear_after_distance=7.0)
+
+        preview = ace._calibrate_retract()
+
+        self.assertEqual(ace.retract_lengths, [5.0, 5.0, 2.0])
+        self.assertEqual(preview["sensor_clear_completed"], 5.0)
+        self.assertEqual(preview["sensor_clear_upper_bound"], 10.0)
+        self.assertEqual(preview["retract_distance"], 12.0)
+        self.assertEqual(preview["phase"], "retract_complete")
+        self.assertEqual(
+            ace.slot_positions[0], "preload_parked_estimated")
+        self.assertEqual(ace.variables["ace_current_index"], -1)
+
+    def test_calibration_save_without_confirm_does_not_persist(self):
+        ace = make_retract_motion_ace()
+        ace._calibration_preview["phase"] = "retract_complete"
+        ace._calibration_preview["sensor_clear_completed"] = 5.0
+        ace._calibration_preview["sensor_clear_upper_bound"] = 10.0
+        ace._calibration_preview["retract_distance"] = 12.0
+        gcmd = FakeGcmd({"CONFIRM": 0})
+
+        ace.cmd_ACE_CALIBRATION_SAVE(gcmd)
+
+        self.assertNotIn("ace_calibration", ace.variables)
+
+    def test_calibration_save_persists_completed_preview(self):
+        ace = make_retract_motion_ace()
+        ace._calibration_preview["phase"] = "retract_complete"
+        ace._calibration_preview["sensor_clear_completed"] = 5.0
+        ace._calibration_preview["sensor_clear_upper_bound"] = 10.0
+        ace._calibration_preview["retract_distance"] = 12.0
+        gcmd = FakeGcmd({"CONFIRM": 1})
+
+        ace.cmd_ACE_CALIBRATION_SAVE(gcmd)
+
+        record = ace.variables["ace_calibration"]
+        self.assertEqual(record["format_version"], 1)
+        self.assertEqual(record["parking_distance"], 12.0)
+        self.assertTrue(record["valid"])
+        self.assertEqual(ace._calibration_phase, "saved")
 
 
 if __name__ == "__main__":
