@@ -32,6 +32,39 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn('ACEPROSV08_DRIVER_VERSION = "1.1.0-luomo"', driver)
         self.assertIn("## [1.1.0]", changelog)
 
+    def test_calibration_and_preload_workflow_is_documented(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        driver_guide = (
+            ROOT / "docs" / "DRIVER-v1.1.0.zh-CN.md"
+        ).read_text(encoding="utf-8")
+        config = (ROOT / "ace.cfg").read_text(encoding="utf-8")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        for term in (
+            "bowden_tube_length",
+            "ACE 出料口到五通进料口",
+            "ACE_PRELOAD",
+            "ACE_CALIBRATE_FEED",
+            "ACE_CALIBRATE_RETRACT",
+            "ACE_CALIBRATION_SAVE",
+            "ACE_FULL_UNLOAD",
+            "preload_parked_estimated",
+            "普通 T0-T3 始终送入喷嘴",
+            "上下传感器必须均无料",
+        ):
+            self.assertIn(term, readme)
+            self.assertIn(term, driver_guide)
+
+        self.assertIn("ACE 出料口到五通进料口", config)
+        self.assertNotIn(
+            "ACE 停放位置到分料器/汇合点之间的实际管路长度",
+            config,
+        )
+        self.assertIn("标定", changelog)
+        self.assertIn("旧版位置状态", readme)
+        self.assertIn("Fluidd v1.37.2", readme)
+        self.assertIn("安装前归档", readme)
+
 
 if __name__ == "__main__":
     unittest.main()
