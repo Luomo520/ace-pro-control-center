@@ -3,6 +3,26 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 
+test('dashboard folds advanced ACE controls behind more features', async () => {
+  const [card, page] = await Promise.all([
+    readFile(
+      'fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue',
+      'utf8'
+    ),
+    readFile('fluidd-source-overlay/src/views/AcePro.vue', 'utf8'),
+  ])
+
+  assert.match(card, /readonly collapseExtraFunctions!:\s*boolean/)
+  assert.match(card, /更多功能/)
+  assert.match(card, /:aria-expanded="showExtraFunctions"/)
+  assert.match(
+    card,
+    /<v-expand-transition>[\s\S]*v-show="showExtraFunctions"[\s\S]*acepro-panel--calibration[\s\S]*acepro-panel--manual[\s\S]*acepro-panel--quick[\s\S]*<\/v-expand-transition>/
+  )
+  assert.match(page, /:collapse-extra-functions="false"/)
+})
+
+
 test('endless spool follows diagnostics without forced right alignment', async () => {
   const source = await readFile(
     'fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue',

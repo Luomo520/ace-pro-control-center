@@ -3,7 +3,10 @@
     fluid
     class="pa-0"
   >
-    <ace-pro-card :show-page-link="false" />
+    <ace-pro-card
+      :show-page-link="false"
+      :collapse-extra-functions="false"
+    />
   </v-container>
 </template>
 

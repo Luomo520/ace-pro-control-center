@@ -297,234 +297,255 @@
         </v-row>
       </section>
 
-      <section class="acepro-panel acepro-panel--calibration">
-        <div class="acepro-panel__header">
-          <div class="acepro-panel__title">
-            距离标定与预装载
-          </div>
-          <span class="acepro-calibration__state">{{ aceProCalibrationStatusLabel }}</span>
-        </div>
+      <button
+        v-if="collapseExtraFunctions"
+        type="button"
+        class="acepro-more-toggle"
+        :aria-expanded="showExtraFunctions"
+        @click="extraFunctionsOpen = !extraFunctionsOpen"
+      >
+        <span>更多功能</span>
+        <v-icon small>
+          {{ showExtraFunctions ? '$chevronUp' : '$chevronDown' }}
+        </v-icon>
+      </button>
 
-        <div class="acepro-calibration__status">
-          <div class="acepro-sensor-row">
-            <span>上方传感器</span>
-            <strong
-              class="acepro-sensor"
-              :class="sensorClass(aceProState.sensors.upper.available, aceProState.sensors.upper.detected)"
-            >
-              {{ sensorText(aceProState.sensors.upper.available, aceProState.sensors.upper.detected) }}
-            </strong>
-          </div>
-          <div class="acepro-sensor-row">
-            <span>下方传感器</span>
-            <strong
-              class="acepro-sensor"
-              :class="sensorClass(aceProState.sensors.lower.available, aceProState.sensors.lower.detected)"
-            >
-              {{ sensorText(aceProState.sensors.lower.available, aceProState.sensors.lower.detected) }}
-            </strong>
-          </div>
-          <div class="acepro-info-item">
-            <span>送料结果</span>
-            <strong>{{ calibrationFeedResult }}</strong>
-          </div>
-          <div class="acepro-info-item">
-            <span>回料结果</span>
-            <strong>{{ calibrationRetractResult }}</strong>
-          </div>
-        </div>
-
-        <div class="acepro-calibration__controls">
-          <v-select
-            v-model.number="calibrationSlot"
-            :items="manualSlotOptions"
-            dense
-            outlined
-            hide-details
-            label="操作料槽"
-            :disabled="aceProMotionControlsDisabled"
-          />
-          <app-btn
-            small
-            :disabled="aceProMotionControlsDisabled"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="preloadSlot(calibrationSlot)"
-          >
-            冷态预装载
-          </app-btn>
-          <app-btn
-            small
-            :disabled="aceProMotionControlsDisabled || !calibrationSensorsClear"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="calibrateFeed(calibrationSlot)"
-          >
-            标定送料
-          </app-btn>
-          <app-btn
-            small
-            :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanRetract"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="calibrateRetract"
-          >
-            标定回料
-          </app-btn>
-          <app-btn
-            small
-            :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanSave"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="saveCalibration"
-          >
-            保存标定
-          </app-btn>
-          <app-btn
-            small
-            text
-            :disabled="aceProHasWait(aceProWaitQuickAction)"
-            @click="cancelCalibration"
-          >
-            取消标定
-          </app-btn>
-          <app-btn
-            small
-            text
-            :disabled="aceProMotionControlsDisabled"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="fullUnload(calibrationSlot)"
-          >
-            完全卸载
-          </app-btn>
-          <app-btn
-            small
-            text
-            color="error"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="abortToolchange"
-          >
-            紧急停止
-          </app-btn>
-        </div>
+      <v-expand-transition>
         <div
-          v-if="aceProState.calibration.lastError"
-          class="acepro-calibration__error"
+          v-show="showExtraFunctions"
+          class="acepro-extra-functions"
+          :class="{ 'acepro-extra-functions--folded': collapseExtraFunctions }"
         >
-          {{ aceProState.calibration.lastError }}
-        </div>
-      </section>
+          <section class="acepro-panel acepro-panel--calibration">
+            <div class="acepro-panel__header">
+              <div class="acepro-panel__title">
+                距离标定与预装载
+              </div>
+              <span class="acepro-calibration__state">{{ aceProCalibrationStatusLabel }}</span>
+            </div>
 
-      <section class="acepro-panel acepro-panel--manual">
-        <div class="acepro-panel__title">
-          手动送料
-        </div>
-        <div class="acepro-manual-controls">
-          <v-select
-            v-model.number="manualSlot"
-            :items="manualSlotOptions"
-            dense
-            outlined
-            hide-details
-            label="料槽"
-            :disabled="aceProBusy || aceProPrinting"
-          />
-          <v-text-field
-            v-model.number="manualLength"
-            dense
-            outlined
-            hide-details
-            type="number"
-            min="1"
-            max="500"
-            label="长度"
-            suffix="mm"
-            :disabled="aceProBusy || aceProPrinting"
-          />
-          <v-text-field
-            v-model.number="manualSpeed"
-            dense
-            outlined
-            hide-details
-            type="number"
-            min="1"
-            max="120"
-            label="速度"
-            suffix="mm/s"
-            :disabled="aceProBusy || aceProPrinting"
-          />
-          <app-btn
-            small
-            :disabled="aceProBusy || aceProPrinting || !manualValuesValid"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="runManualFeed"
-          >
-            送料
-          </app-btn>
-          <app-btn
-            small
-            text
-            :disabled="aceProBusy || aceProPrinting || !manualValuesValid"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="runManualRetract"
-          >
-            回抽
-          </app-btn>
-        </div>
-        <div
-          v-if="aceProPrinting"
-          class="acepro-card__notice"
-        >
-          打印中已禁用手动送料与回抽。
-        </div>
-      </section>
+            <div class="acepro-calibration__status">
+              <div class="acepro-sensor-row">
+                <span>上方传感器</span>
+                <strong
+                  class="acepro-sensor"
+                  :class="sensorClass(aceProState.sensors.upper.available, aceProState.sensors.upper.detected)"
+                >
+                  {{ sensorText(aceProState.sensors.upper.available, aceProState.sensors.upper.detected) }}
+                </strong>
+              </div>
+              <div class="acepro-sensor-row">
+                <span>下方传感器</span>
+                <strong
+                  class="acepro-sensor"
+                  :class="sensorClass(aceProState.sensors.lower.available, aceProState.sensors.lower.detected)"
+                >
+                  {{ sensorText(aceProState.sensors.lower.available, aceProState.sensors.lower.detected) }}
+                </strong>
+              </div>
+              <div class="acepro-info-item">
+                <span>送料结果</span>
+                <strong>{{ calibrationFeedResult }}</strong>
+              </div>
+              <div class="acepro-info-item">
+                <span>回料结果</span>
+                <strong>{{ calibrationRetractResult }}</strong>
+              </div>
+            </div>
 
-      <section class="acepro-panel acepro-panel--quick">
-        <div class="acepro-panel__title">
-          快捷操作
-        </div>
+            <div class="acepro-calibration__controls">
+              <v-select
+                v-model.number="calibrationSlot"
+                :items="manualSlotOptions"
+                dense
+                outlined
+                hide-details
+                label="操作料槽"
+                :disabled="aceProMotionControlsDisabled"
+              />
+              <app-btn
+                small
+                :disabled="aceProMotionControlsDisabled"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="preloadSlot(calibrationSlot)"
+              >
+                冷态预装载
+              </app-btn>
+              <app-btn
+                small
+                :disabled="aceProMotionControlsDisabled || !calibrationSensorsClear"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="calibrateFeed(calibrationSlot)"
+              >
+                标定送料
+              </app-btn>
+              <app-btn
+                small
+                :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanRetract"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="calibrateRetract"
+              >
+                标定回料
+              </app-btn>
+              <app-btn
+                small
+                :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanSave"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="saveCalibration"
+              >
+                保存标定
+              </app-btn>
+              <app-btn
+                small
+                text
+                :disabled="aceProHasWait(aceProWaitQuickAction)"
+                @click="cancelCalibration"
+              >
+                取消标定
+              </app-btn>
+              <app-btn
+                small
+                text
+                :disabled="aceProMotionControlsDisabled"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="fullUnload(calibrationSlot)"
+              >
+                完全卸载
+              </app-btn>
+              <app-btn
+                small
+                text
+                color="error"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="abortToolchange"
+              >
+                紧急停止
+              </app-btn>
+            </div>
+            <div
+              v-if="aceProState.calibration.lastError"
+              class="acepro-calibration__error"
+            >
+              {{ aceProState.calibration.lastError }}
+            </div>
+          </section>
 
-        <div class="acepro-quick-actions">
-          <app-btn
-            small
-            :loading="aceProHasWait(aceProWaitQuickAction) || aceProHasWait(aceProWaitRefresh)"
-            @click="refreshAcePro"
-          >
-            刷新状态
-          </app-btn>
-          <app-btn
-            small
-            :disabled="aceProBusy || aceProCurrentIndex < 0"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="unloadCurrentSlot"
-          >
-            卸载当前耗材
-          </app-btn>
-          <app-btn
-            small
-            :disabled="aceProBusy"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="saveInventory"
-          >
-            保存库存
-          </app-btn>
-          <app-btn
-            small
-            text
-            :disabled="aceProBusy"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="testRunoutSensors"
-          >
-            诊断传感器
-          </app-btn>
-          <div class="acepro-quick-actions__switch">
-            <span>无限续料</span>
-            <v-switch
-              :input-value="aceProState.endlessSpool.enabled"
-              inset
-              hide-details
-              :disabled="aceProBusy"
-              @change="toggleEndlessSpool"
-            />
-          </div>
+          <section class="acepro-panel acepro-panel--manual">
+            <div class="acepro-panel__title">
+              手动送料
+            </div>
+            <div class="acepro-manual-controls">
+              <v-select
+                v-model.number="manualSlot"
+                :items="manualSlotOptions"
+                dense
+                outlined
+                hide-details
+                label="料槽"
+                :disabled="aceProBusy || aceProPrinting"
+              />
+              <v-text-field
+                v-model.number="manualLength"
+                dense
+                outlined
+                hide-details
+                type="number"
+                min="1"
+                max="500"
+                label="长度"
+                suffix="mm"
+                :disabled="aceProBusy || aceProPrinting"
+              />
+              <v-text-field
+                v-model.number="manualSpeed"
+                dense
+                outlined
+                hide-details
+                type="number"
+                min="1"
+                max="120"
+                label="速度"
+                suffix="mm/s"
+                :disabled="aceProBusy || aceProPrinting"
+              />
+              <app-btn
+                small
+                :disabled="aceProBusy || aceProPrinting || !manualValuesValid"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="runManualFeed"
+              >
+                送料
+              </app-btn>
+              <app-btn
+                small
+                text
+                :disabled="aceProBusy || aceProPrinting || !manualValuesValid"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="runManualRetract"
+              >
+                回抽
+              </app-btn>
+            </div>
+            <div
+              v-if="aceProPrinting"
+              class="acepro-card__notice"
+            >
+              打印中已禁用手动送料与回抽。
+            </div>
+          </section>
+
+          <section class="acepro-panel acepro-panel--quick">
+            <div class="acepro-panel__title">
+              快捷操作
+            </div>
+
+            <div class="acepro-quick-actions">
+              <app-btn
+                small
+                :loading="aceProHasWait(aceProWaitQuickAction) || aceProHasWait(aceProWaitRefresh)"
+                @click="refreshAcePro"
+              >
+                刷新状态
+              </app-btn>
+              <app-btn
+                small
+                :disabled="aceProBusy || aceProCurrentIndex < 0"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="unloadCurrentSlot"
+              >
+                卸载当前耗材
+              </app-btn>
+              <app-btn
+                small
+                :disabled="aceProBusy"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="saveInventory"
+              >
+                保存库存
+              </app-btn>
+              <app-btn
+                small
+                text
+                :disabled="aceProBusy"
+                :loading="aceProHasWait(aceProWaitQuickAction)"
+                @click="testRunoutSensors"
+              >
+                诊断传感器
+              </app-btn>
+              <div class="acepro-quick-actions__switch">
+                <span>无限续料</span>
+                <v-switch
+                  :input-value="aceProState.endlessSpool.enabled"
+                  inset
+                  hide-details
+                  :disabled="aceProBusy"
+                  @change="toggleEndlessSpool"
+                />
+              </div>
+            </div>
+          </section>
         </div>
-      </section>
+      </v-expand-transition>
 
       <v-alert
         v-if="aceProLastError || aceProState.warnings.length"
@@ -563,6 +584,9 @@ export default class AceProCard extends Mixins(AceProMixin) {
   @Prop({ type: Boolean, default: true })
   readonly showPageLink!: boolean
 
+  @Prop({ type: Boolean, default: true })
+  readonly collapseExtraFunctions!: boolean
+
   dryerTemperature = 45
   dryerDuration = 240
   dryerTemperatureTouched = false
@@ -571,6 +595,7 @@ export default class AceProCard extends Mixins(AceProMixin) {
   manualLength = 50
   manualSpeed = 25
   calibrationSlot = 0
+  extraFunctionsOpen = false
 
   mounted () {
     this.syncDryerTemperature()
@@ -676,6 +701,10 @@ export default class AceProCard extends Mixins(AceProMixin) {
     return this.manualSlot >= 0 && this.manualSlot <= 3 &&
       this.manualLength >= 1 && this.manualLength <= 500 &&
       this.manualSpeed >= 1 && this.manualSpeed <= 120
+  }
+
+  get showExtraFunctions (): boolean {
+    return !this.collapseExtraFunctions || this.extraFunctionsOpen
   }
 
   get calibrationSensorsClear (): boolean {
@@ -810,6 +839,45 @@ export default class AceProCard extends Mixins(AceProMixin) {
 
 .acepro-panel--slots {
   margin-bottom: 8px;
+}
+
+.acepro-more-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid rgba(61, 71, 86, 0.55);
+  border-radius: 8px;
+  color: #f3f6fb;
+  background: rgba(24, 30, 39, 0.96);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.acepro-more-toggle:hover {
+  border-color: rgba(34, 211, 238, 0.42);
+  background: rgba(29, 37, 48, 0.98);
+}
+
+.acepro-more-toggle:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
+.acepro-more-toggle .v-icon {
+  color: rgba(209, 218, 230, 0.86);
+}
+
+.acepro-extra-functions--folded {
+  margin-top: 6px;
+}
+
+.acepro-extra-functions > .acepro-panel:last-child {
+  margin-bottom: 0;
 }
 
 .acepro-slot-grid {
