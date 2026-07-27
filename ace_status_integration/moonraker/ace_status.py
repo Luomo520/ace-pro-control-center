@@ -136,6 +136,23 @@ def _sensor_state(sensor: Mapping[str, Any], name: str) -> Dict[str, Any]:
     return {"name": name, "available": available, "detected": detected}
 
 
+def _normalize_auto_drying(value: Any) -> Dict[str, Any]:
+    raw = _as_dict(value)
+    return {
+        "available": bool(raw),
+        "enabled": _safe_bool(raw.get("enabled")),
+        "active": _safe_bool(raw.get("active")),
+        "owned_by_auto": _safe_bool(raw.get("owned_by_auto")),
+        "suppressed_for_job": _safe_bool(raw.get("suppressed_for_job")),
+        "temperature": _safe_int(raw.get("temperature")),
+        "reason": str(raw.get("reason") or "EMPTY"),
+        "print_state": str(raw.get("print_state") or "standby"),
+        "last_error": str(raw.get("last_error") or ""),
+        "notice_id": _safe_int(raw.get("notice_id")),
+        "notice_message": str(raw.get("notice_message") or ""),
+    }
+
+
 def normalize_status(
     ace: Mapping[str, Any],
     variables: Mapping[str, Any],
@@ -200,6 +217,7 @@ def normalize_status(
         "fan_speed": _safe_int(ace.get("fan_speed")),
         "feed_assist_index": _safe_int(ace.get("feed_assist_index"), -1),
         "dryer": dryer,
+        "auto_drying": _normalize_auto_drying(ace.get("auto_drying")),
         "sensors": {
             "upper": _sensor_state(upper, upper_name),
             "lower": _sensor_state(lower, lower_name),
@@ -320,6 +338,8 @@ COMMAND_BUILDERS: Dict[str, Callable[[Mapping[str, Any], int], str]] = {
     "ACE_DISABLE_FEED_ASSIST": _build_index_command("ACE_DISABLE_FEED_ASSIST"),
     "ACE_START_DRYING": _build_drying,
     "ACE_STOP_DRYING": _build_no_params("ACE_STOP_DRYING"),
+    "ACE_ENABLE_AUTO_DRYING": _build_no_params("ACE_ENABLE_AUTO_DRYING"),
+    "ACE_DISABLE_AUTO_DRYING": _build_no_params("ACE_DISABLE_AUTO_DRYING"),
     "ACE_ENABLE_ENDLESS_SPOOL": _build_no_params("ACE_ENABLE_ENDLESS_SPOOL"),
     "ACE_DISABLE_ENDLESS_SPOOL": _build_no_params("ACE_DISABLE_ENDLESS_SPOOL"),
     "ACE_SAVE_INVENTORY": _build_no_params("ACE_SAVE_INVENTORY"),
@@ -341,6 +361,7 @@ def build_gcode(payload: Mapping[str, Any], printing: bool = False, connected: b
     if not connected and command not in {
         "ACE_QUERY_SLOTS", "ACE_GET_CURRENT_INDEX", "ACE_TEST_RUNOUT_SENSOR",
         "ACE_ABORT_TOOLCHANGE", "ACE_ACK_TOOLCHANGE",
+        "ACE_ENABLE_AUTO_DRYING", "ACE_DISABLE_AUTO_DRYING",
     }:
         raise AceRequestError("driver_offline", "ACEPROSV08 未连接", status_code=503)
     write_commands = {

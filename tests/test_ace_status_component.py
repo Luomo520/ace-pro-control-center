@@ -106,6 +106,54 @@ class AceStatusContractTests(unittest.TestCase):
 
         self.assertEqual(status["dryer"]["remaining_minutes"], 198)
 
+    def test_normalizes_auto_drying_state(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "auto_drying": {
+                    "enabled": True,
+                    "active": True,
+                    "owned_by_auto": True,
+                    "suppressed_for_job": False,
+                    "temperature": 50,
+                    "reason": "PLA_MIXED",
+                    "print_state": "printing",
+                    "last_error": "",
+                    "notice_id": 7,
+                    "notice_message": "检测到 PLA 与其他材料混装",
+                },
+            },
+            {},
+            {},
+            {},
+            printing=True,
+        )
+
+        self.assertTrue(status["auto_drying"]["enabled"])
+        self.assertTrue(status["auto_drying"]["owned_by_auto"])
+        self.assertEqual(status["auto_drying"]["temperature"], 50)
+        self.assertEqual(status["auto_drying"]["reason"], "PLA_MIXED")
+        self.assertEqual(status["auto_drying"]["notice_id"], 7)
+
+    def test_auto_drying_switches_are_strict_and_available_while_printing(self):
+        for command in (
+            "ACE_ENABLE_AUTO_DRYING",
+            "ACE_DISABLE_AUTO_DRYING",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    ace_status.build_gcode(
+                        {"command": command, "params": {}},
+                        printing=True,
+                        connected=False,
+                    ),
+                    command,
+                )
+                with self.assertRaises(ace_status.AceRequestError):
+                    ace_status.build_gcode(
+                        {"command": command, "params": {"TEMP": 60}}
+                    )
+
     def test_builds_sv08_inventory_command_with_index(self):
         gcode = ace_status.build_gcode(
             {
