@@ -57,3 +57,60 @@ test('endless spool switch removes Vuetify selection-control offset', async () =
   assert.match(switchRule[1], /margin:\s*0/)
   assert.match(switchRule[1], /padding:\s*0/)
 })
+
+
+test('Fluidd card exposes the complete ACE calibration and preload workflow', async () => {
+  const [card, mixin] = await Promise.all([
+    readFile(
+      'fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue',
+      'utf8'
+    ),
+    readFile('fluidd-source-overlay/src/mixins/acePro.ts', 'utf8'),
+  ])
+
+  for (const label of [
+    '距离标定',
+    '冷态预装载',
+    '送料结果',
+    '回料结果',
+    '保存标定',
+    '取消标定',
+    '完全卸载',
+    '紧急停止',
+  ]) {
+    assert.match(card, new RegExp(label))
+  }
+
+  for (const command of [
+    'ACE_PRELOAD',
+    'ACE_CALIBRATE_FEED',
+    'ACE_CALIBRATE_RETRACT',
+    'ACE_CALIBRATION_SAVE',
+    'ACE_CALIBRATION_CANCEL',
+    'ACE_FULL_UNLOAD',
+    'ACE_ABORT_TOOLCHANGE',
+    'ACE_CHANGE_TOOL',
+  ]) {
+    assert.match(mixin, new RegExp(command))
+  }
+})
+
+
+test('Fluidd sends explicit confirmation for every direct filament movement', async () => {
+  const mixin = await readFile(
+    'fluidd-source-overlay/src/mixins/acePro.ts',
+    'utf8'
+  )
+
+  assert.doesNotMatch(mixin, /ACE_ACK_TOOLCHANGE/)
+  assert.match(mixin, /ACE_FEED[\s\S]*CONFIRM:\s*1/)
+  assert.match(mixin, /ACE_RETRACT[\s\S]*CONFIRM:\s*1/)
+  assert.match(mixin, /ACE_PRELOAD[\s\S]*CONFIRM:\s*1/)
+  assert.match(mixin, /ACE_CALIBRATE_FEED[\s\S]*CONFIRM:\s*1/)
+  assert.match(mixin, /ACE_CALIBRATE_RETRACT[\s\S]*CONFIRM:\s*1/)
+  assert.match(mixin, /ACE_FULL_UNLOAD[\s\S]*CONFIRM:\s*1/)
+
+  const unload = mixin.match(/async unloadCurrentSlot \(\) \{([\s\S]*?)\n  \}/)
+  assert.ok(unload)
+  assert.match(unload[1], /this\.\$confirm/)
+})

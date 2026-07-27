@@ -182,6 +182,24 @@ createApp({
                 notice_message: ''
             },
             lastAutoDryingNoticeId: null,
+            slotPositions: ['unknown', 'unknown', 'unknown', 'unknown'],
+            motionOwner: '',
+            printing: false,
+            calibration: {
+                available: false,
+                valid: false,
+                stale: false,
+                phase: 'unavailable',
+                selected_slot: -1,
+                feed_completed: 0,
+                feed_upper_bound: 0,
+                sensor_clear_completed: 0,
+                sensor_clear_upper_bound: 0,
+                retract_distance: 0,
+                parking_distance: 0,
+                last_error: ''
+            },
+            calibrationSlot: 0,
 
             // Dryer
             dryerStatus: {
@@ -603,6 +621,22 @@ createApp({
             if (data.endless_spool && typeof data.endless_spool === 'object') {
                 this.endlessSpool = { ...this.endlessSpool, ...data.endless_spool };
             }
+            if (Array.isArray(data.slot_positions)) {
+                this.slotPositions = Array.from({ length: 4 }, (_, index) => data.slot_positions[index] || 'unknown');
+            }
+            if (data.motion_owner !== undefined) {
+                this.motionOwner = String(data.motion_owner || '');
+            }
+            if (data.printing !== undefined) {
+                this.printing = Boolean(data.printing);
+            }
+            if (data.calibration && typeof data.calibration === 'object') {
+                this.calibration = {
+                    ...this.calibration,
+                    ...data.calibration,
+                    available: data.calibration.available !== false
+                };
+            }
             if (data.auto_drying && typeof data.auto_drying === 'object') {
                 const nextAutoDrying = {
                     ...this.autoDrying,
@@ -684,7 +718,8 @@ createApp({
                                 ? this.getPreviousHex(prevPanel, slot.index) || this.getColorHex(slot.color)
                                 : this.getColorHex(slot.color),
                             sku: slot.sku || '',
-                            rfid: slot.rfid !== undefined ? slot.rfid : 0
+                            rfid: slot.rfid !== undefined ? slot.rfid : 0,
+                            position: slot.position || this.slotPositions[slot.index] || 'unknown'
                         })),
                         feedAssistSlot: typeof item.feed_assist_slot === 'number' ? item.feed_assist_slot : -1,
                         rfidSyncEnabled: typeof item.rfid_sync_enabled === 'boolean' ? item.rfid_sync_enabled : this.rfidSyncEnabled
@@ -709,7 +744,8 @@ createApp({
                             : this.getColorHex(slot.color),
                         temp: typeof slot.temp === 'number' ? slot.temp : (typeof slot.temperature === 'number' ? slot.temperature : 0),
                         sku: slot.sku || '',
-                        rfid: slot.rfid !== undefined ? slot.rfid : 0
+                        rfid: slot.rfid !== undefined ? slot.rfid : 0,
+                        position: slot.position || this.slotPositions[slot.index] || 'unknown'
                     }));
                 } else {
                     console.warn('Slots data is not an array:', data.slots);
@@ -801,6 +837,10 @@ createApp({
 
         // Device Actions
         async changeToolForInstance(tool, instanceIndex) {
+            const message = tool < 0
+                ? '确认卸载当前耗材并执行完整回料流程？'
+                : `确认装载 T${tool} 并送入喷嘴？`;
+            if (!window.confirm(message)) return;
             const success = await this.executeCommand('ACE_CHANGE_TOOL', { TOOL: tool, INSTANCE: instanceIndex });
             if (success && instanceIndex === this.selectedInstance) {
                 this.currentTool = tool;
@@ -976,10 +1016,12 @@ createApp({
                 return;
             }
 
+            if (!window.confirm(`确认从 T${this.feedSlot} 手动送料 ${this.feedLength} mm，速度 ${this.feedSpeed} mm/s？`)) return;
             const success = await this.executeCommand('ACE_FEED', {
                 INDEX: this.feedSlot,
                 LENGTH: this.feedLength,
-                SPEED: this.feedSpeed
+                SPEED: this.feedSpeed,
+                CONFIRM: 1
             });
 
             if (success) {
@@ -1004,15 +1046,50 @@ createApp({
                 return;
             }
 
+            if (!window.confirm(`确认从 T${this.retractSlot} 手动回抽 ${this.retractLength} mm，速度 ${this.retractSpeed} mm/s？`)) return;
             const success = await this.executeCommand('ACE_RETRACT', {
                 INDEX: this.retractSlot,
                 LENGTH: this.retractLength,
-                SPEED: this.retractSpeed
+                SPEED: this.retractSpeed,
+                CONFIRM: 1
             });
 
             if (success) {
                 this.closeRetractDialog();
             }
+        },
+
+        async preloadSlot(index) {
+            if (!window.confirm(`确认将 T${index} 冷态预装载到挤出机下方传感器？此操作不会加热或送到喷嘴。`)) return;
+            await this.executeCommand('ACE_PRELOAD', { INDEX: index, CONFIRM: 1 });
+        },
+
+        async calibrateFeed(index) {
+            if (!window.confirm(`确认使用 T${index} 开始送料距离标定？开始前上下传感器必须均无料。`)) return;
+            await this.executeCommand('ACE_CALIBRATE_FEED', { INDEX: index, CONFIRM: 1 });
+        },
+
+        async calibrateRetract() {
+            if (!window.confirm('确认继续回料距离标定，并将耗材回收到估算的五通预停放位置？')) return;
+            await this.executeCommand('ACE_CALIBRATE_RETRACT', { CONFIRM: 1 });
+        },
+
+        async saveCalibration() {
+            if (!window.confirm('确认保存当前送料和回料标定结果？配置中的料管长度或停车余量变化后需要重新标定。')) return;
+            await this.executeCommand('ACE_CALIBRATION_SAVE', { CONFIRM: 1 });
+        },
+
+        async cancelCalibration() {
+            await this.executeCommand('ACE_CALIBRATION_CANCEL', {});
+        },
+
+        async fullUnload(index) {
+            if (!window.confirm(`确认将 T${index} 完全退回 ACE 内部？请确认料路没有卡料。`)) return;
+            await this.executeCommand('ACE_FULL_UNLOAD', { INDEX: index, CONFIRM: 1 });
+        },
+
+        async abortToolchange() {
+            await this.executeCommand('ACE_ABORT_TOOLCHANGE', {});
         },
 
         async refreshStatus() {
@@ -1038,6 +1115,55 @@ createApp({
         sensorClass(sensor) {
             if (!sensor || !sensor.available) return 'missing';
             return sensor.detected ? 'on' : 'off';
+        },
+
+        slotPositionText(position) {
+            const labels = {
+                internal_or_unknown: 'ACE 内部或未知',
+                preload_parked_estimated: '五通预停放',
+                upper_sensor: '上方传感器',
+                toolhead: '挤出机内',
+                nozzle: '喷嘴',
+                unknown: '位置未知'
+            };
+            return labels[position] || '位置未知';
+        },
+
+        calibrationStatusText() {
+            if (!this.calibration.available) return '不可用';
+            if (this.calibration.last_error || this.calibration.phase === 'failed') return '失败';
+            if (this.calibration.stale) return '已过期';
+            if (this.calibration.valid) return '有效';
+            const labels = {
+                idle: '未标定',
+                feeding: '正在标定送料',
+                feed_complete: '送料完成，等待回料',
+                retracting: '正在标定回料',
+                retract_complete: '回料完成，等待保存',
+                saved: '已保存',
+                unavailable: '不可用'
+            };
+            return labels[this.calibration.phase] || '未标定';
+        },
+
+        calibrationFeedResult() {
+            if (Number(this.calibration.feed_upper_bound) <= 0) return '--';
+            return `${Number(this.calibration.feed_completed).toFixed(1)} / ${Number(this.calibration.feed_upper_bound).toFixed(1)} mm`;
+        },
+
+        calibrationRetractResult() {
+            if (Number(this.calibration.retract_distance) <= 0) return '--';
+            return `${Number(this.calibration.retract_distance).toFixed(1)} mm · 停放 ${Number(this.calibration.parking_distance).toFixed(1)} mm`;
+        },
+
+        calibrationSensorsClear() {
+            return this.sensors.upper.available && this.sensors.lower.available &&
+                !this.sensors.upper.detected && !this.sensors.lower.detected;
+        },
+
+        motionControlsDisabled() {
+            return this.printing || !this.wsConnected || this.deviceStatus.connection_state !== 'connected' ||
+                Boolean(this.motionOwner) || this.deviceStatus.status === 'busy';
         },
 
         connectionBadgeClass() {

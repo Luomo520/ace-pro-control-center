@@ -225,6 +225,10 @@
                                         <span class="label">{{ t('slots.rfid') }}:</span>
                                         <span class="value">{{ getRfidStatusText(slot.rfid) }}</span>
                                     </div>
+                                    <div class="info-item">
+                                        <span class="label">耗材位置：</span>
+                                        <span class="value">{{ slotPositionText(slot.position) }}</span>
+                                    </div>
                                 </div>
 
                                 <div class="slot-actions">
@@ -262,6 +266,49 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <div class="card calibration-card">
+                <div class="calibration-header">
+                    <h2>距离标定与预装载</h2>
+                    <span class="status-badge">{{ calibrationStatusText() }}</span>
+                </div>
+                <div class="calibration-status-grid">
+                    <div class="calibration-status-item">
+                        <span>上方传感器</span>
+                        <span class="sensor-switch" :class="sensorClass(sensors.upper)">{{ sensorText(sensors.upper) }}</span>
+                    </div>
+                    <div class="calibration-status-item">
+                        <span>下方传感器</span>
+                        <span class="sensor-switch" :class="sensorClass(sensors.lower)">{{ sensorText(sensors.lower) }}</span>
+                    </div>
+                    <div class="calibration-status-item">
+                        <span>送料结果</span>
+                        <strong>{{ calibrationFeedResult() }}</strong>
+                    </div>
+                    <div class="calibration-status-item">
+                        <span>回料结果</span>
+                        <strong>{{ calibrationRetractResult() }}</strong>
+                    </div>
+                </div>
+                <div class="calibration-controls">
+                    <label class="calibration-slot-select">
+                        <span>操作料槽</span>
+                        <select v-model.number="calibrationSlot" :disabled="motionControlsDisabled()">
+                            <option v-for="slot in [0, 1, 2, 3]" :key="slot" :value="slot">T{{ slot }}</option>
+                        </select>
+                    </label>
+                    <button class="btn btn-primary" :disabled="motionControlsDisabled()" @click="preloadSlot(calibrationSlot)">冷态预装载</button>
+                    <button class="btn btn-secondary" :disabled="motionControlsDisabled() || !calibrationSensorsClear()" @click="calibrateFeed(calibrationSlot)">标定送料</button>
+                    <button class="btn btn-secondary" :disabled="motionControlsDisabled() || calibration.phase !== 'feed_complete'" @click="calibrateRetract">标定回料</button>
+                    <button class="btn btn-success" :disabled="motionControlsDisabled() || calibration.phase !== 'retract_complete'" @click="saveCalibration">保存标定</button>
+                    <button class="btn btn-secondary" @click="cancelCalibration">取消标定</button>
+                    <button class="btn btn-warning" :disabled="motionControlsDisabled()" @click="fullUnload(calibrationSlot)">完全卸载</button>
+                    <button class="btn btn-danger" @click="abortToolchange">紧急停止</button>
+                </div>
+                <div v-if="calibration.last_error" class="calibration-error">
+                    {{ calibration.last_error }}
                 </div>
             </div>
 

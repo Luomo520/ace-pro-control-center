@@ -80,6 +80,10 @@
         <span>SKU</span>
         <strong>{{ slot.sku || '--' }}</strong>
       </div>
+      <div class="acepro-slot-card__meta-row acepro-slot-card__meta-row--position">
+        <span>耗材位置</span>
+        <strong>{{ positionText }}</strong>
+      </div>
     </div>
 
     <div class="acepro-slot-card__editor">
@@ -260,6 +264,18 @@ export default class AceProSlotCard extends Vue {
     if (this.slot.hardwareStatus === 'empty') return '无耗材'
     if (this.slot.hardwareStatus === 'busy') return '处理中'
     return this.slot.hardwareStatus || '未知'
+  }
+
+  get positionText (): string {
+    const labels: Record<string, string> = {
+      internal_or_unknown: 'ACE 内部或未知',
+      preload_parked_estimated: '五通预停放',
+      upper_sensor: '上方传感器',
+      toolhead: '挤出机内',
+      nozzle: '喷嘴',
+      unknown: '位置未知',
+    }
+    return labels[this.slot.position] || '位置未知'
   }
 
   get colorHex (): string {
@@ -477,6 +493,10 @@ export default class AceProSlotCard extends Vue {
 
 .acepro-slot-card__meta-row strong {
   color: #eef2f7;
+}
+
+.acepro-slot-card__meta-row--position {
+  grid-column: 1 / -1;
 }
 
 .acepro-slot-card__editor {

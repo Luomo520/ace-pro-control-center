@@ -102,14 +102,39 @@ export default class AceProMixin extends StateMixin {
     return this.aceProState.toolchange.recoveryRequired
   }
 
-  get aceProToolchangeCanAcknowledge (): boolean {
-    return this.aceProToolchangeRecoveryRequired &&
-      !this.aceProState.sensors.upper.detected &&
-      !this.aceProState.sensors.lower.detected
-  }
-
   get aceProPrinting (): boolean {
     return this.aceProState.printing
+  }
+
+  get aceProMotionControlsDisabled (): boolean {
+    return !this.aceProConnected || this.aceProPrinting || this.aceProBusy ||
+      this.aceProState.motionOwner.length > 0
+  }
+
+  get aceProCalibrationStatusLabel (): string {
+    const calibration = this.aceProState.calibration
+    if (!calibration.available) return '不可用'
+    if (calibration.lastError || calibration.phase === 'failed') return '失败'
+    if (calibration.stale) return '已过期'
+    if (calibration.valid) return '有效'
+    const labels: Record<string, string> = {
+      idle: '未标定',
+      feeding: '正在标定送料',
+      feed_complete: '送料完成，等待回料',
+      retracting: '正在标定回料',
+      retract_complete: '回料完成，等待保存',
+      saved: '已保存',
+      unavailable: '不可用',
+    }
+    return labels[calibration.phase] || '未标定'
+  }
+
+  get aceProCalibrationCanRetract (): boolean {
+    return this.aceProState.calibration.phase === 'feed_complete'
+  }
+
+  get aceProCalibrationCanSave (): boolean {
+    return this.aceProState.calibration.phase === 'retract_complete'
   }
 
   get aceProDryerActive (): boolean {
@@ -292,6 +317,11 @@ export default class AceProMixin extends StateMixin {
   }
 
   async unloadCurrentSlot () {
+    const result = await this.$confirm(
+      '确认卸载当前耗材并执行完整回料流程？',
+      { title: 'ACE Pro 卸载耗材', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
     await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: -1 }, WAIT_QUICK_ACTION, 'ACE_CHANGE_TOOL TOOL=-1')
   }
 
@@ -305,19 +335,16 @@ export default class AceProMixin extends StateMixin {
     await this.pollAceProApi()
   }
 
-  async acknowledgeToolchange () {
-    const result = await this.$confirm(
-      '请确认已经人工检查耗材路径，并且上下传感器均显示无料。确认后仍需重新装载耗材。',
-      { title: 'ACE Pro 安全恢复', color: 'card-heading', icon: '$warning' }
-    )
-    if (!result || !this.aceProToolchangeCanAcknowledge) return
-    await this.executeAceCommand(
-      'ACE_ACK_TOOLCHANGE',
-      { CONFIRM: 1 },
-      WAIT_QUICK_ACTION,
-      'ACE_ACK_TOOLCHANGE CONFIRM=1'
-    )
-    await this.pollAceProApi()
+  aceProSlotPositionLabel (position: string): string {
+    const labels: Record<string, string> = {
+      internal_or_unknown: 'ACE 内部或未知',
+      preload_parked_estimated: '五通预停放',
+      upper_sensor: '上方传感器',
+      toolhead: '挤出机内',
+      nozzle: '喷嘴',
+      unknown: '位置未知',
+    }
+    return labels[position] || '位置未知'
   }
 
   async saveInventory () {
@@ -369,22 +396,111 @@ export default class AceProMixin extends StateMixin {
   }
 
   async manualFeed (index: number, length: number, speed: number) {
-    const params = { INDEX: Math.round(index), LENGTH: Math.round(length), SPEED: Math.round(speed) }
+    const params = { INDEX: Math.round(index), LENGTH: Math.round(length), SPEED: Math.round(speed), CONFIRM: 1 }
+    const result = await this.$confirm(
+      `确认从 T${params.INDEX} 手动送料 ${params.LENGTH} mm，速度 ${params.SPEED} mm/s？`,
+      { title: 'ACE Pro 手动送料', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
     await this.executeAceCommand(
       'ACE_FEED',
       params,
       WAIT_QUICK_ACTION,
-      `ACE_FEED INDEX=${params.INDEX} LENGTH=${params.LENGTH} SPEED=${params.SPEED}`
+      `ACE_FEED INDEX=${params.INDEX} LENGTH=${params.LENGTH} SPEED=${params.SPEED} CONFIRM=1`
     )
   }
 
   async manualRetract (index: number, length: number, speed: number) {
-    const params = { INDEX: Math.round(index), LENGTH: Math.round(length), SPEED: Math.round(speed) }
+    const params = { INDEX: Math.round(index), LENGTH: Math.round(length), SPEED: Math.round(speed), CONFIRM: 1 }
+    const result = await this.$confirm(
+      `确认从 T${params.INDEX} 手动回抽 ${params.LENGTH} mm，速度 ${params.SPEED} mm/s？`,
+      { title: 'ACE Pro 手动回抽', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
     await this.executeAceCommand(
       'ACE_RETRACT',
       params,
       WAIT_QUICK_ACTION,
-      `ACE_RETRACT INDEX=${params.INDEX} LENGTH=${params.LENGTH} SPEED=${params.SPEED}`
+      `ACE_RETRACT INDEX=${params.INDEX} LENGTH=${params.LENGTH} SPEED=${params.SPEED} CONFIRM=1`
+    )
+  }
+
+  async preloadSlot (index: number) {
+    const result = await this.$confirm(
+      `确认将 T${index} 冷态预装载到挤出机下方传感器？此操作不会加热或送到喷嘴。`,
+      { title: 'ACE Pro 冷态预装载', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
+    await this.executeAceCommand(
+      'ACE_PRELOAD',
+      { INDEX: index, CONFIRM: 1 },
+      WAIT_QUICK_ACTION,
+      `ACE_PRELOAD INDEX=${index} CONFIRM=1`
+    )
+  }
+
+  async calibrateFeed (index: number) {
+    const result = await this.$confirm(
+      `确认使用 T${index} 开始送料距离标定？开始前上下传感器必须均无料。`,
+      { title: 'ACE Pro 距离标定', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
+    await this.executeAceCommand(
+      'ACE_CALIBRATE_FEED',
+      { INDEX: index, CONFIRM: 1 },
+      WAIT_QUICK_ACTION,
+      `ACE_CALIBRATE_FEED INDEX=${index} CONFIRM=1`
+    )
+  }
+
+  async calibrateRetract () {
+    const result = await this.$confirm(
+      '确认继续回料距离标定，并将耗材回收到估算的五通预停放位置？',
+      { title: 'ACE Pro 距离标定', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
+    await this.executeAceCommand(
+      'ACE_CALIBRATE_RETRACT',
+      { CONFIRM: 1 },
+      WAIT_QUICK_ACTION,
+      'ACE_CALIBRATE_RETRACT CONFIRM=1'
+    )
+  }
+
+  async saveCalibration () {
+    const result = await this.$confirm(
+      '确认保存当前送料和回料标定结果？配置中的料管长度或停车余量变化后需要重新标定。',
+      { title: 'ACE Pro 保存标定', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
+    await this.executeAceCommand(
+      'ACE_CALIBRATION_SAVE',
+      { CONFIRM: 1 },
+      WAIT_QUICK_ACTION,
+      'ACE_CALIBRATION_SAVE CONFIRM=1'
+    )
+  }
+
+  async cancelCalibration () {
+    await this.executeAceCommand(
+      'ACE_CALIBRATION_CANCEL',
+      {},
+      WAIT_QUICK_ACTION,
+      'ACE_CALIBRATION_CANCEL'
+    )
+  }
+
+  async fullUnload (index: number) {
+    const result = await this.$confirm(
+      `确认将 T${index} 完全退回 ACE 内部？请确认料路没有卡料。`,
+      { title: 'ACE Pro 完全卸载', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
+    await this.executeAceCommand(
+      'ACE_FULL_UNLOAD',
+      { INDEX: index, CONFIRM: 1 },
+      WAIT_QUICK_ACTION,
+      `ACE_FULL_UNLOAD INDEX=${index} CONFIRM=1`
     )
   }
 

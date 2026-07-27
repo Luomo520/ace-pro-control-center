@@ -70,16 +70,7 @@
             :loading="aceProHasWait(aceProWaitQuickAction)"
             @click="abortToolchange"
           >
-            重新发送停止
-          </app-btn>
-          <app-btn
-            small
-            text
-            :disabled="!aceProToolchangeCanAcknowledge"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="acknowledgeToolchange"
-          >
-            确认已安全处理
+            紧急停止
           </app-btn>
         </div>
       </v-alert>
@@ -306,6 +297,120 @@
         </v-row>
       </section>
 
+      <section class="acepro-panel acepro-panel--calibration">
+        <div class="acepro-panel__header">
+          <div class="acepro-panel__title">
+            距离标定与预装载
+          </div>
+          <span class="acepro-calibration__state">{{ aceProCalibrationStatusLabel }}</span>
+        </div>
+
+        <div class="acepro-calibration__status">
+          <div class="acepro-sensor-row">
+            <span>上方传感器</span>
+            <strong
+              class="acepro-sensor"
+              :class="sensorClass(aceProState.sensors.upper.available, aceProState.sensors.upper.detected)"
+            >
+              {{ sensorText(aceProState.sensors.upper.available, aceProState.sensors.upper.detected) }}
+            </strong>
+          </div>
+          <div class="acepro-sensor-row">
+            <span>下方传感器</span>
+            <strong
+              class="acepro-sensor"
+              :class="sensorClass(aceProState.sensors.lower.available, aceProState.sensors.lower.detected)"
+            >
+              {{ sensorText(aceProState.sensors.lower.available, aceProState.sensors.lower.detected) }}
+            </strong>
+          </div>
+          <div class="acepro-info-item">
+            <span>送料结果</span>
+            <strong>{{ calibrationFeedResult }}</strong>
+          </div>
+          <div class="acepro-info-item">
+            <span>回料结果</span>
+            <strong>{{ calibrationRetractResult }}</strong>
+          </div>
+        </div>
+
+        <div class="acepro-calibration__controls">
+          <v-select
+            v-model.number="calibrationSlot"
+            :items="manualSlotOptions"
+            dense
+            outlined
+            hide-details
+            label="操作料槽"
+            :disabled="aceProMotionControlsDisabled"
+          />
+          <app-btn
+            small
+            :disabled="aceProMotionControlsDisabled"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="preloadSlot(calibrationSlot)"
+          >
+            冷态预装载
+          </app-btn>
+          <app-btn
+            small
+            :disabled="aceProMotionControlsDisabled || !calibrationSensorsClear"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="calibrateFeed(calibrationSlot)"
+          >
+            标定送料
+          </app-btn>
+          <app-btn
+            small
+            :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanRetract"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="calibrateRetract"
+          >
+            标定回料
+          </app-btn>
+          <app-btn
+            small
+            :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanSave"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="saveCalibration"
+          >
+            保存标定
+          </app-btn>
+          <app-btn
+            small
+            text
+            :disabled="aceProHasWait(aceProWaitQuickAction)"
+            @click="cancelCalibration"
+          >
+            取消标定
+          </app-btn>
+          <app-btn
+            small
+            text
+            :disabled="aceProMotionControlsDisabled"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="fullUnload(calibrationSlot)"
+          >
+            完全卸载
+          </app-btn>
+          <app-btn
+            small
+            text
+            color="error"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="abortToolchange"
+          >
+            紧急停止
+          </app-btn>
+        </div>
+        <div
+          v-if="aceProState.calibration.lastError"
+          class="acepro-calibration__error"
+        >
+          {{ aceProState.calibration.lastError }}
+        </div>
+      </section>
+
       <section class="acepro-panel acepro-panel--manual">
         <div class="acepro-panel__title">
           手动送料
@@ -465,6 +570,7 @@ export default class AceProCard extends Mixins(AceProMixin) {
   manualSlot = 0
   manualLength = 50
   manualSpeed = 25
+  calibrationSlot = 0
 
   mounted () {
     this.syncDryerTemperature()
@@ -570,6 +676,24 @@ export default class AceProCard extends Mixins(AceProMixin) {
     return this.manualSlot >= 0 && this.manualSlot <= 3 &&
       this.manualLength >= 1 && this.manualLength <= 500 &&
       this.manualSpeed >= 1 && this.manualSpeed <= 120
+  }
+
+  get calibrationSensorsClear (): boolean {
+    const sensors = this.aceProState.sensors
+    return sensors.upper.available && sensors.lower.available &&
+      !sensors.upper.detected && !sensors.lower.detected
+  }
+
+  get calibrationFeedResult (): string {
+    const calibration = this.aceProState.calibration
+    if (calibration.feedUpperBound <= 0) return '--'
+    return `${calibration.feedCompleted.toFixed(1)} / ${calibration.feedUpperBound.toFixed(1)} mm`
+  }
+
+  get calibrationRetractResult (): string {
+    const calibration = this.aceProState.calibration
+    if (calibration.retractDistance <= 0) return '--'
+    return `${calibration.retractDistance.toFixed(1)} mm · 停放 ${calibration.parkingDistance.toFixed(1)} mm`
   }
 
   sensorText (available: boolean, detected: boolean): string {
@@ -882,6 +1006,46 @@ export default class AceProCard extends Mixins(AceProMixin) {
   align-items: center;
 }
 
+.acepro-calibration__state {
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: #cffafe;
+  background: rgba(8, 145, 178, 0.18);
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.acepro-calibration__status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.acepro-calibration__controls {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.8fr) repeat(7, auto);
+  gap: 5px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.acepro-calibration__controls ::v-deep .v-input__slot {
+  min-height: 30px !important;
+}
+
+.acepro-calibration__controls ::v-deep .v-btn {
+  min-height: 28px;
+  padding: 0 7px;
+  font-size: 10px;
+}
+
+.acepro-calibration__error {
+  margin-top: 4px;
+  color: #fca5a5;
+  font-size: 10px;
+}
+
 .acepro-manual-controls ::v-deep .v-input__slot {
   min-height: 32px !important;
 }
@@ -1084,6 +1248,14 @@ export default class AceProCard extends Mixins(AceProMixin) {
   .acepro-manual-controls {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .acepro-calibration__status {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .acepro-calibration__controls {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 600px) {
@@ -1109,6 +1281,11 @@ export default class AceProCard extends Mixins(AceProMixin) {
   }
 
   .acepro-manual-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .acepro-calibration__status,
+  .acepro-calibration__controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

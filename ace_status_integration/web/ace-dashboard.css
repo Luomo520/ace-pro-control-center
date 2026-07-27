@@ -836,6 +836,70 @@ body {
     text-align: center;
 }
 
+.calibration-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.calibration-header h2 {
+    margin: 0;
+}
+
+.calibration-status-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.calibration-status-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 38px;
+    padding: 7px 9px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #f8fafc;
+    font-size: 13px;
+}
+
+.calibration-status-item strong {
+    text-align: right;
+}
+
+.calibration-controls {
+    display: grid;
+    grid-template-columns: minmax(130px, 0.8fr) repeat(7, auto);
+    align-items: end;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.calibration-slot-select {
+    display: grid;
+    gap: 4px;
+    color: #4b5563;
+    font-size: 12px;
+}
+
+.calibration-slot-select select {
+    min-height: 36px;
+    padding: 6px 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: white;
+}
+
+.calibration-error {
+    margin-top: 8px;
+    color: #b91c1c;
+    font-size: 12px;
+}
+
 /* Quick Actions */
 .quick-actions {
     display: flex;
@@ -996,6 +1060,11 @@ body {
 
     .slot-actions {
         grid-template-columns: 1fr;
+    }
+
+    .calibration-status-grid,
+    .calibration-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .modal {
