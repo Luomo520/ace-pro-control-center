@@ -3,6 +3,7 @@ from serial import SerialException
 import serial.tools.list_ports
 
 ACEPROSV08_DRIVER_VERSION = "1.1.0-luomo"
+CALIBRATION_FORMAT_VERSION = 1
 
 AUTO_DRYING_DURATION_MINUTES = 1440
 AUTO_DRYING_KNOWN_MATERIALS = {
@@ -25,6 +26,37 @@ SLOT_POSITION_VALUES = {
     'nozzle',
     'unknown',
 }
+
+
+def calculate_parking_distance(feed_upper_bound, bowden_tube_length,
+                               parking_margin, max_distance):
+    parking_distance = (
+        float(feed_upper_bound)
+        - float(bowden_tube_length)
+        + float(parking_margin))
+    if parking_distance <= 0 or parking_distance > float(max_distance):
+        raise ValueError('calculated parking distance is outside safe bounds')
+    return parking_distance
+
+
+def calibration_is_valid(record, bowden_tube_length, parking_margin,
+                         format_version=CALIBRATION_FORMAT_VERSION):
+    if not isinstance(record, dict) or record.get('valid') is not True:
+        return False
+    try:
+        if int(record.get('format_version', -1)) != int(format_version):
+            return False
+        if abs(float(record.get('bowden_tube_length'))
+               - float(bowden_tube_length)) > 1e-6:
+            return False
+        if abs(float(record.get('parking_margin'))
+               - float(parking_margin)) > 1e-6:
+            return False
+        return (
+            float(record.get('feed_upper_bound')) > 0
+            and float(record.get('parking_distance')) > 0)
+    except (TypeError, ValueError):
+        return False
 
 
 def select_auto_drying_policy(slots):
@@ -78,7 +110,7 @@ class BunnyAce:
         self.feed_approach_speed = config.getfloat(
             'feed_approach_speed', min(float(self.feed_speed), 25.), above=0.)
         self.feed_approach_length = config.getfloat(
-            'feed_approach_length', 200., minval=0.)
+            'feed_approach_length', 100., minval=0.)
         self.intermittent_feed = config.getboolean(
             'intermittent_feed', False)
         self.feed_fast_chunk_length = config.getfloat(
@@ -145,6 +177,18 @@ class BunnyAce:
             'auto_resume_after_ace_reconnect', True)
         # self.extruder_to_blade_length = config.getint('extruder_to_blade', None)
         self.bowden_tube_length = config.getint('bowden_tube_length', 1000)
+        self.five_way_parking_margin = config.getfloat(
+            'five_way_parking_margin', 20., minval=0.)
+        self.calibration_speed = config.getfloat(
+            'calibration_speed', 25., above=0.)
+        self.calibration_chunk_length = config.getfloat(
+            'calibration_chunk_length', 5., above=0.)
+        self.calibration_final_chunk_length = config.getfloat(
+            'calibration_final_chunk_length', 2., above=0.)
+        self._calibration_preview = None
+        self._calibration_phase = 'idle'
+        self._calibration_last_error = ''
+        self._load_calibration_record()
 
         self.max_dryer_temperature = config.getint('max_dryer_temperature', 55)
 
@@ -389,6 +433,32 @@ class BunnyAce:
         if persist:
             self._save_json_variable(
                 'ace_slot_positions', self.slot_positions)
+
+    def _load_calibration_record(self):
+        record = self.variables.get('ace_calibration')
+        if isinstance(record, str):
+            try:
+                record = json.loads(record)
+            except (TypeError, ValueError):
+                record = None
+        self.calibration_record = (
+            copy.deepcopy(record) if isinstance(record, dict) else None)
+        self.calibration_valid = calibration_is_valid(
+            self.calibration_record,
+            self.bowden_tube_length,
+            self.five_way_parking_margin)
+
+    def _save_calibration_record(self, record):
+        if not calibration_is_valid(
+                record,
+                self.bowden_tube_length,
+                self.five_way_parking_margin):
+            raise ValueError(
+                'ACE calibration record does not match current config')
+        self.calibration_record = copy.deepcopy(record)
+        self.calibration_valid = True
+        self._save_json_variable(
+            'ace_calibration', self.calibration_record)
 
 
     def _calc_crc(self, buffer):
