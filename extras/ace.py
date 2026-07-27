@@ -17,6 +17,14 @@ AUTO_DRYING_MESSAGES = {
     'PLA_ONLY': '自动烘干使用 45°C：全部已装载耗材均为 PLA。',
     'HIGH_TEMP': '自动烘干使用 60°C：已装载耗材均为高温材料。',
 }
+SLOT_POSITION_VALUES = {
+    'internal_or_unknown',
+    'preload_parked_estimated',
+    'upper_sensor',
+    'toolhead',
+    'nozzle',
+    'unknown',
+}
 
 
 def select_auto_drying_policy(slots):
@@ -57,6 +65,7 @@ class BunnyAce:
         if self._name.startswith('ace '):
             self._name = self._name[4:]
         self.variables = self.printer.lookup_object('save_variables').allVariables
+        self._load_slot_positions()
 
         self.serial_name = config.get('serial', '/dev/ttyACM0')
         self.baud = config.getint('baud', 115200)
@@ -332,6 +341,54 @@ class BunnyAce:
         self.gcode.register_command(
             'ACE_ABORT_TOOLCHANGE', self.cmd_ACE_ABORT_TOOLCHANGE,
             desc=self.cmd_ACE_ABORT_TOOLCHANGE_help)
+
+    def _load_slot_positions(self):
+        saved = self.variables.get('ace_slot_positions')
+        if isinstance(saved, str):
+            try:
+                saved = json.loads(saved)
+            except (TypeError, ValueError):
+                saved = None
+        if (isinstance(saved, list) and len(saved) == 4
+                and all(position in SLOT_POSITION_VALUES
+                        for position in saved)):
+            self.slot_positions = list(saved)
+            return
+
+        positions = ['unknown'] * 4
+        try:
+            current_index = int(self.variables.get('ace_current_index', -1))
+        except (TypeError, ValueError):
+            current_index = -1
+        legacy = str(
+            self.variables.get('ace_filament_pos', '') or '').strip().lower()
+        legacy_map = {
+            'nozzle': 'nozzle',
+            'toolhead': 'toolhead',
+            'bowden': 'preload_parked_estimated',
+            'spliter': 'preload_parked_estimated',
+            'splitter': 'preload_parked_estimated',
+        }
+        if 0 <= current_index < 4 and legacy in legacy_map:
+            positions[current_index] = legacy_map[legacy]
+        self.slot_positions = positions
+
+    def _save_json_variable(self, name, value):
+        stored = copy.deepcopy(value)
+        self.variables[name] = stored
+        encoded = json.dumps(stored, separators=(',', ':'))
+        self.gcode.run_script_from_command(
+            "SAVE_VARIABLE VARIABLE=%s VALUE='%s'" % (name, encoded))
+
+    def _set_slot_position(self, index, position, persist=True):
+        if index < 0 or index >= 4:
+            raise ValueError('ACE slot index must be between 0 and 3')
+        if position not in SLOT_POSITION_VALUES:
+            raise ValueError('ACE slot position is invalid')
+        self.slot_positions[index] = position
+        if persist:
+            self._save_json_variable(
+                'ace_slot_positions', self.slot_positions)
 
 
     def _calc_crc(self, buffer):
@@ -2467,6 +2524,14 @@ class BunnyAce:
         status['intermittent_feed'] = self.intermittent_feed
         status['intermittent_retract'] = self.intermittent_retract
         status['ace_stop_ready_timeout'] = self.ace_stop_ready_timeout
+        status['slot_positions'] = list(self.slot_positions)
+        try:
+            current_index = int(self.variables.get('ace_current_index', -1))
+        except (TypeError, ValueError):
+            current_index = -1
+        status['filament_position'] = (
+            self.slot_positions[current_index]
+            if 0 <= current_index < 4 else 'unknown')
         return status
 
     def cmd_ACE_SET_SLOT(self, gcmd):
