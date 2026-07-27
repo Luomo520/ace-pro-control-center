@@ -168,6 +168,20 @@ createApp({
                 runout_detected: false,
                 in_progress: false
             },
+            autoDrying: {
+                available: false,
+                enabled: false,
+                active: false,
+                owned_by_auto: false,
+                suppressed_for_job: false,
+                temperature: 0,
+                reason: 'EMPTY',
+                print_state: 'standby',
+                last_error: '',
+                notice_id: 0,
+                notice_message: ''
+            },
+            lastAutoDryingNoticeId: null,
 
             // Dryer
             dryerStatus: {
@@ -589,6 +603,24 @@ createApp({
             if (data.endless_spool && typeof data.endless_spool === 'object') {
                 this.endlessSpool = { ...this.endlessSpool, ...data.endless_spool };
             }
+            if (data.auto_drying && typeof data.auto_drying === 'object') {
+                const nextAutoDrying = {
+                    ...this.autoDrying,
+                    ...data.auto_drying,
+                    available: data.auto_drying.available !== false
+                };
+                const incomingNoticeId = Number(nextAutoDrying.notice_id) || 0;
+                if (this.lastAutoDryingNoticeId === null || incomingNoticeId < this.lastAutoDryingNoticeId) {
+                    this.lastAutoDryingNoticeId = incomingNoticeId;
+                } else if (incomingNoticeId > this.lastAutoDryingNoticeId) {
+                    this.lastAutoDryingNoticeId = incomingNoticeId;
+                    const message = nextAutoDrying.notice_message || nextAutoDrying.last_error;
+                    if (message) {
+                        this.showNotification(message, nextAutoDrying.last_error ? 'error' : 'info');
+                    }
+                }
+                this.autoDrying = nextAutoDrying;
+            }
 
             // Обновляем статус сушилки
             const dryer = data.dryer || data.dryer_status;
@@ -793,6 +825,21 @@ createApp({
                 this.endlessSpool.enabled = !this.endlessSpool.enabled;
                 setTimeout(() => this.loadStatus(), 500);
             }
+        },
+
+        async toggleAutoDrying() {
+            const enabling = !this.autoDrying.enabled;
+            if (enabling && ['PLA_MIXED', 'UNKNOWN'].includes(this.autoDrying.reason)) {
+                const message = this.autoDrying.reason === 'PLA_MIXED'
+                    ? '检测到 PLA 与其他材料混装，自动烘干使用 50°C 以保护 PLA；其他高温材料的烘干效果可能受限。'
+                    : '检测到未知材料，将以 45°C 进行自动烘干，部分材料的烘干效果可能受限。';
+                if (!window.confirm(message)) return;
+            }
+            const command = enabling
+                ? 'ACE_ENABLE_AUTO_DRYING'
+                : 'ACE_DISABLE_AUTO_DRYING';
+            const success = await this.executeCommand(command, {});
+            if (success) await this.loadStatus();
         },
 
         async testRunoutSensors() {
@@ -1000,6 +1047,27 @@ createApp({
 
         getDryerStatusText(status) {
             return this.t(`dryerStatusMap.${status}`) || status;
+        },
+
+        autoDryingStatusText() {
+            if (!this.autoDrying.available) return '状态不可用';
+            if (!this.autoDrying.enabled) return '已关闭';
+            if (this.autoDrying.active) return `运行中 ${this.autoDrying.temperature}°C`;
+            return '已开启';
+        },
+
+        autoDryingBasisText() {
+            const labels = {
+                EMPTY: '未检测到耗材',
+                UNKNOWN: '未知材料',
+                PLA_MIXED: 'PLA 混装',
+                PLA_ONLY: '全部 PLA',
+                HIGH_TEMP: '高温材料'
+            };
+            const basis = labels[this.autoDrying.reason] || labels.UNKNOWN;
+            return this.autoDrying.temperature > 0
+                ? `${this.autoDrying.temperature}°C · ${basis}`
+                : basis;
         },
 
         getSlotStatusText(status) {

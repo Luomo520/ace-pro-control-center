@@ -293,6 +293,59 @@ body {
     gap: 12px;
 }
 
+.auto-drying-control {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 38px;
+    padding: 5px 9px;
+    background: #151921;
+    border: 1px solid #232a33;
+    border-radius: 6px;
+}
+
+.auto-drying-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+    font-size: 12px;
+}
+
+.auto-drying-copy span {
+    color: #9ba4b1;
+    overflow-wrap: anywhere;
+}
+
+.auto-drying-toggle {
+    flex: 0 0 auto;
+    min-width: 48px;
+    min-height: 28px;
+    padding: 3px 10px;
+    color: #d0d7e2;
+    background: #374151;
+    border: 1px solid #6b7280;
+    border-radius: 999px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.auto-drying-toggle.on {
+    color: #d1fae5;
+    background: #14532d;
+    border-color: #31c48d;
+}
+
+.auto-drying-toggle:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.auto-drying-error {
+    color: #fca5a5;
+    font-size: 12px;
+}
+
 .control-group.inline {
     flex-direction: row;
     align-items: center;

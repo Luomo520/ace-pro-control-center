@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ACE Pro 控制面板</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <link rel="stylesheet" href="ace-dashboard.css?v=20260715a">
+    <link rel="stylesheet" href="ace-dashboard.css?v=20260727a">
     <script src="vue.global.prod.js?v=3.5.13"></script>
     <script src="ace-dashboard-config.js?v=20260715a"></script>
 </head>
@@ -70,6 +70,10 @@
                                 <span class="sensor-switch" :class="sensorClass(sensors.lower)">{{ sensorText(sensors.lower) }}</span>
                             </div>
                             <div class="info-row">
+                                <span class="label">自动烘干：</span>
+                                <span class="value">{{ autoDryingStatusText() }}</span>
+                            </div>
+                            <div class="info-row">
                                 <span class="label">{{ t('deviceInfo.rfid') }}:</span>
                                 <span class="value">{{ deviceStatus.enable_rfid ? t('deviceInfo.rfidOn') : t('deviceInfo.rfidOff') }}</span>
                             </div>
@@ -110,6 +114,25 @@
                                     {{ t('dryer.buttons.stop') }}
                                 </button>
                             </div>
+                        </div>
+                        <div class="auto-drying-control">
+                            <div class="auto-drying-copy">
+                                <strong>自动跟随打印</strong>
+                                <span>{{ autoDryingBasisText() }}</span>
+                            </div>
+                            <button
+                                type="button"
+                                class="auto-drying-toggle"
+                                :class="{ on: autoDrying.enabled }"
+                                :aria-pressed="autoDrying.enabled ? 'true' : 'false'"
+                                :disabled="!autoDrying.available"
+                                @click="toggleAutoDrying"
+                            >
+                                {{ autoDrying.enabled ? '开' : '关' }}
+                            </button>
+                        </div>
+                        <div v-if="autoDrying.last_error" class="auto-drying-error">
+                            {{ autoDrying.last_error }}
                         </div>
                     </div>
                 </div>
@@ -307,6 +330,6 @@
         </div>
     </div>
 
-    <script src="ace-dashboard.js?v=20260715a"></script>
+    <script src="ace-dashboard.js?v=20260727a"></script>
 </body>
 </html>
