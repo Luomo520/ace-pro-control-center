@@ -42,6 +42,8 @@ def make_ace(intermittent):
     ace.feed_slip_compensation_speed = 25.0
     ace.ace_motion_chunk_length = 100.0
     ace.extruder_sensor_timeout = 15.0
+    ace._active_ace_motion = None
+    ace._abort_requested = False
     ace.gcode = FakeGcode()
     ace._sensor_present = lambda _name: False
     ace._set_toolchange_phase = lambda *_args, **_kwargs: None

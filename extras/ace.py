@@ -195,6 +195,8 @@ class BunnyAce:
         self._calibration_phase = 'idle'
         self._calibration_last_error = ''
         self._motion_owner = None
+        self._active_ace_motion = None
+        self._abort_requested = False
         self._load_calibration_record()
 
         self.max_dryer_temperature = config.getint('max_dryer_temperature', 55)
@@ -205,6 +207,9 @@ class BunnyAce:
         self.endless_spool_enabled = config.getboolean('endless_spool', saved_endless_spool_enabled)
         self.endless_spool_in_progress = False
         self.endless_spool_runout_detected = False
+        self.endless_spool_runout_samples = 0
+        self.runout_debounce_count = config.getint(
+            'runout_debounce_count', 3, minval=1)
 
         saved_auto_drying = self.variables.get(
             'ace_auto_drying_enabled', False)
@@ -407,6 +412,9 @@ class BunnyAce:
         self.gcode.register_command(
             'ACE_PRELOAD', self.cmd_ACE_PRELOAD,
             desc=self.cmd_ACE_PRELOAD_help)
+        self.gcode.register_command(
+            'ACE_FULL_UNLOAD', self.cmd_ACE_FULL_UNLOAD,
+            desc=self.cmd_ACE_FULL_UNLOAD_help)
 
     def _load_slot_positions(self):
         saved = self.variables.get('ace_slot_positions')
@@ -1817,7 +1825,10 @@ class BunnyAce:
 
     def _endless_spool_monitor(self, eventtime):
         """Monitor for runout detection during printing"""
-        if not self.endless_spool_enabled or self._park_in_progress or self.endless_spool_in_progress:
+        if (not self.endless_spool_enabled or self._park_in_progress
+                or self.endless_spool_in_progress
+                or self._motion_owner is not None):
+            self.endless_spool_runout_samples = 0
             return eventtime + 0.1
 
         # Only monitor if we have an active tool and we're not already in runout state
@@ -1825,49 +1836,19 @@ class BunnyAce:
         if current_tool == -1:
             return eventtime + 0.1
 
-        # Check if we're currently printing - be more aggressive about detecting print state
         try:
-            # Check multiple indicators that we might be printing
-            toolhead = self.printer.lookup_object('toolhead')
             print_stats = self.printer.lookup_object('print_stats', None)
-            
-            is_printing = False
-            
-            # Method 1: Check if toolhead is moving
-            if hasattr(toolhead, 'get_status'):
-                toolhead_status = toolhead.get_status(eventtime)
-                if 'homed_axes' in toolhead_status and toolhead_status['homed_axes']:
-                    is_printing = True
-            
-            # Method 2: Check print stats if available
-            if print_stats:
-                stats = print_stats.get_status(eventtime)
-                if stats.get('state') in ['printing']:
-                    is_printing = True
-            
-            # Method 3: Check idle timeout state
-            try:
-                printer_idle = self.printer.lookup_object('idle_timeout')
-                idle_state = printer_idle.get_status(eventtime)['state']
-                if idle_state in ['Printing', 'Ready']:  # Ready means potentially printing
-                    is_printing = True
-            except:
-                # If idle_timeout doesn't exist, assume we might be printing
-                is_printing = True
-
-            # Always check for runout if endless spool is enabled and we have an active tool
-            # Don't rely only on print state detection
-            if current_tool >= 0:
-                self._endless_spool_runout_handler()
-            
-            # Adjust monitoring frequency based on state
-            if is_printing:
-                return eventtime + 0.05  # Check every 50ms during printing
-            else:
-                return eventtime + 0.2   # Check every 200ms when idle
-                
+            state = (
+                str(print_stats.get_status(eventtime).get('state') or '')
+                .lower() if print_stats is not None else 'unknown')
+            if state != 'printing':
+                self.endless_spool_runout_samples = 0
+                return eventtime + 0.2
+            self._endless_spool_runout_handler()
+            return eventtime + 0.05
         except Exception as e:
             logging.info(f'ACE: Endless spool monitor error: {str(e)}')
+            self.endless_spool_runout_samples = 0
             return eventtime + 0.1
 
     def _on_toolhead_move(self, print_time, newpos, oldpos):
@@ -2106,6 +2087,26 @@ class BunnyAce:
 
     def _run_ace_motion(self, method, index, length, speed,
                         stop_sensor=None):
+        if self._active_ace_motion is not None:
+            raise self.printer.command_error('ACE：已有物理动作正在运行')
+        self._active_ace_motion = {
+            'method': method,
+            'index': int(index),
+            'length': float(length),
+            'speed': float(speed),
+        }
+        self._abort_requested = False
+        try:
+            result = self._run_ace_motion_request(
+                method, index, length, speed, stop_sensor=stop_sensor)
+            if self._abort_requested:
+                raise self.printer.command_error('ACE：物理动作已由用户终止')
+            return result
+        finally:
+            self._active_ace_motion = None
+
+    def _run_ace_motion_request(self, method, index, length, speed,
+                                stop_sensor=None):
         operation = '%s slot=%d length=%.1f' % (method, index, length)
         allow_reconnect = self._toolchange_context is not None
         while True:
@@ -2306,6 +2307,25 @@ class BunnyAce:
             'ACE：槽位 T%d 已停止送料' % index)
         return response
 
+    def _stop_unwind(self, index):
+        try:
+            response = self._request_sync(
+                request={
+                    'method': 'stop_unwind_filament',
+                    'params': {'index': index},
+                },
+                operation='stop unwind filament',
+                allow_reconnect=False,
+                retryable=False,
+                high_priority=True)
+        except ValueError as exc:
+            if 'FORBIDDEN' not in str(exc).upper():
+                raise
+            response = {'code': 0, 'msg': 'already stopped'}
+        self.gcode.respond_info(
+            'ACE：槽位 T%d 已停止回抽' % index)
+        return response
+
     def _feed(self, index, length, speed, stop_sensor=None):
         return self._run_ace_motion(
             'feed_filament', index, length, speed,
@@ -2324,8 +2344,18 @@ class BunnyAce:
             raise gcmd.error('送料长度错误')
         if speed <= 0:
             raise gcmd.error('送料速度错误')
-
-        self._feed(index, length, speed)
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：将从 T%d 手动送料 %d mm，速度 %d mm/s；'
+                '确认后请添加 CONFIRM=1' % (index, length, speed))
+            return
+        if self._print_state() in ('printing', 'paused'):
+            raise gcmd.error('ACE：打印或暂停期间禁止手动送料')
+        try:
+            self._acquire_motion('手动送料')
+            self._feed(index, length, speed)
+        finally:
+            self._release_motion('手动送料')
 
     def _retract(self, index, length, speed):
         return self._run_ace_motion(
@@ -2582,8 +2612,18 @@ class BunnyAce:
             raise gcmd.error('回收长度错误')
         if speed <= 0:
             raise gcmd.error('回收速度错误')
-
-        self._retract(index, length, speed)
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：将从 T%d 手动回料 %d mm，速度 %d mm/s；'
+                '确认后请添加 CONFIRM=1' % (index, length, speed))
+            return
+        if self._print_state() in ('printing', 'paused'):
+            raise gcmd.error('ACE：打印或暂停期间禁止手动回料')
+        try:
+            self._acquire_motion('手动回料')
+            self._retract(index, length, speed)
+        finally:
+            self._release_motion('手动回料')
 
     def _park_to_toolhead(self, tool, gcmd, endless_spool_was_enabled):
         self.wait_ace_ready()
@@ -2654,6 +2694,9 @@ class BunnyAce:
 
     def cmd_ACE_CHANGE_TOOL(self, gcmd):
         tool = gcmd.get_int('TOOL')
+        return self._change_tool(tool, gcmd)
+
+    def _change_tool(self, tool, gcmd, force_full_unload=False):
         sensor_extruder = self.printer.lookup_object("filament_switch_sensor %s" % "extruder_sensor", None)
 
         if tool < -1 or tool >= 4:
@@ -2793,8 +2836,13 @@ class BunnyAce:
                     self.variables['ace_filament_pos'] = "bowden"
 
                 self.wait_ace_ready()
-                parking_distance, parked_position = (
-                    self._parking_retract_profile())
+                if force_full_unload or tool == -1:
+                    parking_distance = float(
+                        self.toolchange_retract_length)
+                    parked_position = 'internal_or_unknown'
+                else:
+                    parking_distance, parked_position = (
+                        self._parking_retract_profile())
                 self._retract_in_chunks(
                     was,
                     parking_distance,
@@ -2875,6 +2923,27 @@ class BunnyAce:
                 self._complete_toolchange_recovery()
             self._toolchange_context = None
 
+    cmd_ACE_FULL_UNLOAD_help = (
+        'Fully unload the current slot back into ACE - INDEX= CONFIRM=1')
+
+    def cmd_ACE_FULL_UNLOAD(self, gcmd):
+        index = gcmd.get_int('INDEX')
+        if index < 0 or index >= 4:
+            raise gcmd.error('ACE：槽位编号必须为 0-3')
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：将把当前 T%d 完全回收到 ACE；确认后请执行 '
+                'ACE_FULL_UNLOAD INDEX=%d CONFIRM=1' % (index, index))
+            return
+        if self._print_state() in ('printing', 'paused'):
+            raise gcmd.error('ACE：打印或暂停期间禁止完全卸载')
+        current = int(self.variables.get('ace_current_index', -1))
+        if current != index:
+            raise gcmd.error(
+                'ACE：当前槽位为 %s，不能按 T%d 执行完全卸载' % (
+                    self._tool_label(current), index))
+        self._change_tool(-1, gcmd, force_full_unload=True)
+
     def _find_next_available_slot(self, current_slot):
         """Find the next available slot with filament for endless spool"""
         slots = self._info.get('slots') or []
@@ -2909,12 +2978,18 @@ class BunnyAce:
                 
                 # Runout detected if filament is not present
                 if not runout_helper_present or not endstop_triggered:
-                    if not self.endless_spool_runout_detected:  # Only trigger once
+                    self.endless_spool_runout_samples += 1
+                    if (self.endless_spool_runout_samples
+                            < self.runout_debounce_count):
+                        return
+                    if not self.endless_spool_runout_detected:
                         self.endless_spool_runout_detected = True
                         self.gcode.respond_info("ACE：检测到断料，正在执行无限续料切换")
                         logging.info(f"ACE: Runout detected - runout_helper={runout_helper_present}, endstop={endstop_triggered}")
                         # Execute endless spool change immediately
                         self._execute_endless_spool_change()
+                else:
+                    self.endless_spool_runout_samples = 0
         except Exception as e:
             logging.info(f'ACE: Runout detection error: {str(e)}')
 
@@ -2939,6 +3014,12 @@ class BunnyAce:
             self.gcode.respond_info(
                 'ACE：另一个换料流程正在执行，无法启动无限续料')
             return
+        if self._motion_owner is not None:
+            self.endless_spool_in_progress = False
+            self.gcode.respond_info(
+                'ACE：%s 正在运行，无法启动无限续料' %
+                self._motion_owner)
+            return
         self._toolchange_context = {
             'kind': 'endless',
             'from': current_tool,
@@ -2960,6 +3041,7 @@ class BunnyAce:
             self.gcode.run_script_from_command(f'SAVE_VARIABLE VARIABLE=ace_inventory VALUE=\'{json.dumps(self.inventory)}\'')
         
         completed = False
+        self._acquire_motion('无限续料')
         try:
             # Direct endless spool change - no toolchange macros needed for runout response
             
@@ -3003,13 +3085,12 @@ class BunnyAce:
                         'ACE: Failed to disable feed assist during endless cleanup')
             self.gcode.run_script_from_command('PAUSE')
         finally:
+            self._release_motion('无限续料')
             self.endless_spool_in_progress = False
             self._park_in_progress = False
             if completed:
                 self._toolchange_last_error = None
             self._toolchange_context = None
-
-    cmd_ACE_ENABLE_ENDLESS_SPOOL_help = 'Enable endless spool feature'
 
     cmd_ACE_ENABLE_ENDLESS_SPOOL_help = 'Enable endless spool feature'
 
@@ -3215,13 +3296,26 @@ class BunnyAce:
     cmd_ACE_ABORT_TOOLCHANGE_help = 'Abort the in-memory ACE toolchange recovery state'
 
     def cmd_ACE_ABORT_TOOLCHANGE(self, gcmd):
-        if (self._toolchange_context is None
+        active = self._active_ace_motion
+        if (active is None and self._toolchange_context is None
                 and self._pending_toolchange_recovery is None):
             gcmd.respond_info('ACE：当前没有需要终止的换料恢复状态')
             return
         self._toolchange_last_error = '用户已终止换料'
+        self._abort_requested = True
+        if active is not None:
+            method = active.get('method')
+            index = int(active.get('index', -1))
+            if self._connected and 0 <= index < 4:
+                if method == 'feed_filament':
+                    self._stop_feed(index)
+                elif method == 'unwind_filament':
+                    self._stop_unwind(index)
+            if 0 <= index < 4:
+                self._set_slot_position(index, 'unknown')
         self._cancel_toolchange_recovery()
-        self._toolchange_context = None
+        if active is None:
+            self._toolchange_context = None
         self._pending_feed_assist_restore = -1
         self._park_in_progress = False
         self.endless_spool_in_progress = False
@@ -3231,8 +3325,10 @@ class BunnyAce:
                     self._feed_assist_index, allow_reconnect=False)
             except Exception:
                 logging.exception('ACE: Failed to disable feed assist on abort')
+        self._pause_for_filament_failure()
         gcmd.respond_info(
-            'ACE：换料恢复状态已清除；再次换料前请检查上下传感器')
+            'ACE：已请求停止当前物理动作并终止换料；'
+            '再次换料前请检查上下传感器')
 
     cmd_ACE_CHANGE_SPOOL_help = 'Change spool for a specific index - INDEX= (retracts filament from tube, unloads if loaded first)'
 

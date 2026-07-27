@@ -33,6 +33,74 @@ class FakeKlippyApis:
 
 
 class AceStatusContractTests(unittest.TestCase):
+    def test_capabilities_do_not_advertise_unregistered_ack(self):
+        self.assertNotIn("ACE_ACK_TOOLCHANGE", ace_status.COMMAND_BUILDERS)
+
+    def test_builds_confirmed_preload_and_calibration_commands(self):
+        cases = (
+            (
+                "ACE_PRELOAD",
+                {"INDEX": 2, "CONFIRM": 1},
+                "ACE_PRELOAD INDEX=2 CONFIRM=1",
+            ),
+            (
+                "ACE_CALIBRATE_FEED",
+                {"INDEX": 1, "CONFIRM": True},
+                "ACE_CALIBRATE_FEED INDEX=1 CONFIRM=1",
+            ),
+            (
+                "ACE_CALIBRATE_RETRACT",
+                {"CONFIRM": 1},
+                "ACE_CALIBRATE_RETRACT CONFIRM=1",
+            ),
+            (
+                "ACE_CALIBRATION_SAVE",
+                {"CONFIRM": 1},
+                "ACE_CALIBRATION_SAVE CONFIRM=1",
+            ),
+            (
+                "ACE_FULL_UNLOAD",
+                {"INDEX": 3, "CONFIRM": 1},
+                "ACE_FULL_UNLOAD INDEX=3 CONFIRM=1",
+            ),
+        )
+        for command, params, expected in cases:
+            with self.subTest(command=command):
+                self.assertEqual(
+                    ace_status.build_gcode(
+                        {"command": command, "params": params}),
+                    expected,
+                )
+
+    def test_confirmed_motion_rejects_missing_confirmation(self):
+        for command, params in (
+            ("ACE_PRELOAD", {"INDEX": 0}),
+            ("ACE_CALIBRATE_FEED", {"INDEX": 0}),
+            ("ACE_CALIBRATE_RETRACT", {}),
+            ("ACE_CALIBRATION_SAVE", {}),
+            ("ACE_FULL_UNLOAD", {"INDEX": 0}),
+            ("ACE_FEED", {"INDEX": 0, "LENGTH": 20, "SPEED": 10}),
+            ("ACE_RETRACT", {"INDEX": 0, "LENGTH": 20, "SPEED": 10}),
+        ):
+            with self.subTest(command=command):
+                with self.assertRaises(ace_status.AceRequestError):
+                    ace_status.build_gcode(
+                        {"command": command, "params": params})
+
+    def test_manual_motion_includes_one_time_confirmation(self):
+        self.assertEqual(
+            ace_status.build_gcode({
+                "command": "ACE_FEED",
+                "params": {
+                    "INDEX": 0,
+                    "LENGTH": 20,
+                    "SPEED": 10,
+                    "CONFIRM": 1,
+                },
+            }),
+            "ACE_FEED INDEX=0 LENGTH=20 SPEED=10 CONFIRM=1",
+        )
+
     def test_normalizes_sv08_inventory_and_sensor_state(self):
         status = ace_status.normalize_status(
             {
@@ -230,14 +298,46 @@ class AceStatusContractTests(unittest.TestCase):
                 FakeWebRequest(
                     {
                         "command": "ACE_FEED",
-                        "params": {"INDEX": 2, "LENGTH": 30, "SPEED": 15},
+                        "params": {
+                            "INDEX": 2,
+                            "LENGTH": 30,
+                            "SPEED": 15,
+                            "CONFIRM": 1,
+                        },
                     }
                 )
             )
         )
 
         self.assertTrue(result["success"])
-        self.assertEqual(component.klippy_apis.gcodes, ["ACE_FEED INDEX=2 LENGTH=30 SPEED=15"])
+        self.assertEqual(
+            component.klippy_apis.gcodes,
+            ["ACE_FEED INDEX=2 LENGTH=30 SPEED=15 CONFIRM=1"],
+        )
+
+    def test_abort_handler_runs_real_driver_command(self):
+        component = ace_status.AceStatus.__new__(ace_status.AceStatus)
+        component.klippy_apis = FakeKlippyApis()
+
+        async def fake_status(_webrequest):
+            return {
+                "printing": True,
+                "connected": False,
+                "max_dryer_temperature": 65,
+            }
+
+        component.handle_status_request = fake_status
+        result = asyncio.run(
+            component.handle_command_request(FakeWebRequest({
+                "command": "ACE_ABORT_TOOLCHANGE",
+                "params": {},
+            })))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            component.klippy_apis.gcodes,
+            ["ACE_ABORT_TOOLCHANGE"],
+        )
 
 
 if __name__ == "__main__":

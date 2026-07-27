@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import time
-import os
 from typing import Any, Callable, Dict, Mapping, Optional
 
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._+-]{1,24}$")
@@ -295,11 +294,20 @@ def _build_index_command(command: str) -> Callable[[Mapping[str, Any], int], str
 
 def _build_move(command: str) -> Callable[[Mapping[str, Any], int], str]:
     def builder(params: Mapping[str, Any], max_dryer_temperature: int = 65) -> str:
-        _reject_unknown(params, {"INDEX", "LENGTH", "SPEED"})
+        _reject_unknown(params, {"INDEX", "LENGTH", "SPEED", "CONFIRM"})
+        if not _safe_bool(params.get("CONFIRM")):
+            raise AceRequestError(
+                "confirmation_required",
+                "手动送料或回料必须设置 CONFIRM=1",
+                "params.CONFIRM",
+            )
         index = _require_int(params, "INDEX", 0, 3)
         length = _require_int(params, "LENGTH", 1, 500)
         speed = _require_int(params, "SPEED", 1, 120)
-        return f"{command} INDEX={index} LENGTH={length} SPEED={speed}"
+        return (
+            f"{command} INDEX={index} LENGTH={length} SPEED={speed} "
+            "CONFIRM=1"
+        )
     return builder
 
 
@@ -317,15 +325,36 @@ def _build_no_params(command: str) -> Callable[[Mapping[str, Any], int], str]:
     return builder
 
 
-def _build_ack_toolchange(params: Mapping[str, Any], max_dryer_temperature: int = 65) -> str:
-    _reject_unknown(params, {"CONFIRM"})
-    if not _safe_bool(params.get("CONFIRM")):
-        raise AceRequestError(
-            "confirmation_required",
-            "确认恢复必须设置 CONFIRM=1",
-            "params.CONFIRM",
-        )
-    return "ACE_ACK_TOOLCHANGE CONFIRM=1"
+def _build_confirmed_index(command: str) -> Callable[[Mapping[str, Any], int], str]:
+    def builder(params: Mapping[str, Any], max_dryer_temperature: int = 65) -> str:
+        _reject_unknown(params, {"INDEX", "CONFIRM"})
+        if not _safe_bool(params.get("CONFIRM")):
+            raise AceRequestError(
+                "confirmation_required",
+                "该动作必须设置 CONFIRM=1",
+                "params.CONFIRM",
+            )
+        index = _require_int(params, "INDEX", 0, 3)
+        return f"{command} INDEX={index} CONFIRM=1"
+    return builder
+
+
+def _build_confirmed_no_params(command: str) -> Callable[[Mapping[str, Any], int], str]:
+    def builder(params: Mapping[str, Any], max_dryer_temperature: int = 65) -> str:
+        _reject_unknown(params, {"CONFIRM"})
+        if not _safe_bool(params.get("CONFIRM")):
+            raise AceRequestError(
+                "confirmation_required",
+                "该动作必须设置 CONFIRM=1",
+                "params.CONFIRM",
+            )
+        return f"{command} CONFIRM=1"
+    return builder
+
+
+def _build_calibration_cancel(params: Mapping[str, Any], max_dryer_temperature: int = 65) -> str:
+    _reject_unknown(params, set())
+    return "ACE_CALIBRATION_CANCEL"
 
 
 COMMAND_BUILDERS: Dict[str, Callable[[Mapping[str, Any], int], str]] = {
@@ -347,7 +376,14 @@ COMMAND_BUILDERS: Dict[str, Callable[[Mapping[str, Any], int], str]] = {
     "ACE_GET_CURRENT_INDEX": _build_no_params("ACE_GET_CURRENT_INDEX"),
     "ACE_TEST_RUNOUT_SENSOR": _build_no_params("ACE_TEST_RUNOUT_SENSOR"),
     "ACE_ABORT_TOOLCHANGE": _build_no_params("ACE_ABORT_TOOLCHANGE"),
-    "ACE_ACK_TOOLCHANGE": _build_ack_toolchange,
+    "ACE_PRELOAD": _build_confirmed_index("ACE_PRELOAD"),
+    "ACE_CALIBRATE_FEED": _build_confirmed_index("ACE_CALIBRATE_FEED"),
+    "ACE_CALIBRATE_RETRACT": _build_confirmed_no_params(
+        "ACE_CALIBRATE_RETRACT"),
+    "ACE_CALIBRATION_SAVE": _build_confirmed_no_params(
+        "ACE_CALIBRATION_SAVE"),
+    "ACE_CALIBRATION_CANCEL": _build_calibration_cancel,
+    "ACE_FULL_UNLOAD": _build_confirmed_index("ACE_FULL_UNLOAD"),
 }
 
 
@@ -360,13 +396,15 @@ def build_gcode(payload: Mapping[str, Any], printing: bool = False, connected: b
         raise AceRequestError("unsupported_command", f"不支持的 ACE 命令: {command}", "command")
     if not connected and command not in {
         "ACE_QUERY_SLOTS", "ACE_GET_CURRENT_INDEX", "ACE_TEST_RUNOUT_SENSOR",
-        "ACE_ABORT_TOOLCHANGE", "ACE_ACK_TOOLCHANGE",
+        "ACE_ABORT_TOOLCHANGE",
         "ACE_ENABLE_AUTO_DRYING", "ACE_DISABLE_AUTO_DRYING",
     }:
         raise AceRequestError("driver_offline", "ACEPROSV08 未连接", status_code=503)
     write_commands = {
         "ACE_SET_SLOT", "ACE_CHANGE_TOOL", "ACE_CHANGE_SPOOL", "ACE_FEED", "ACE_RETRACT",
         "ACE_ENABLE_FEED_ASSIST", "ACE_START_DRYING", "ACE_ENABLE_ENDLESS_SPOOL",
+        "ACE_PRELOAD", "ACE_CALIBRATE_FEED", "ACE_CALIBRATE_RETRACT",
+        "ACE_CALIBRATION_SAVE", "ACE_FULL_UNLOAD",
     }
     if printing and command in write_commands:
         raise AceRequestError("printer_busy", "打印中不允许执行该操作", status_code=409)
@@ -381,10 +419,6 @@ class AceStatus:
         self.upper_sensor_name = config.get("upper_sensor_name", DEFAULT_UPPER_SENSOR)
         self.lower_sensor_name = config.get("lower_sensor_name", DEFAULT_LOWER_SENSOR)
         self._last_status: Optional[Dict[str, Any]] = None
-        self.cancel_file = os.path.expanduser(
-            config.get("toolchange_cancel_file", "~/printer_data/comms/aceprosv08-toolchange.cancel")
-        )
-
         self.server.register_endpoint("/server/ace/status", ["GET"], self.handle_status_request)
         self.server.register_endpoint("/server/ace/slots", ["GET"], self.handle_slots_request)
         self.server.register_endpoint("/server/ace/capabilities", ["GET"], self.handle_capabilities_request)
@@ -458,19 +492,6 @@ class AceStatus:
             payload = webrequest.get_args()
             if not isinstance(payload, dict):
                 raise AceRequestError("invalid_request", "请求体必须是 JSON 对象")
-            command = str(payload.get("command") or "").strip().upper()
-            if command == "ACE_ABORT_TOOLCHANGE":
-                parent = os.path.dirname(self.cancel_file)
-                if parent:
-                    os.makedirs(parent, exist_ok=True)
-                with open(self.cancel_file, "a", encoding="ascii"):
-                    pass
-                os.utime(self.cancel_file, None)
-                return {
-                    "success": True,
-                    "command": command,
-                    "request_id": f"ace-cancel-{int(time.time() * 1000)}",
-                }
             status = await self.handle_status_request(webrequest)
             gcode = build_gcode(
                 payload,

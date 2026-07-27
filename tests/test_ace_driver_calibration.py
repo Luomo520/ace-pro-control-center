@@ -117,6 +117,8 @@ def make_motion_ace(trigger_after_feed_calls=2):
     ace.calibration_final_chunk_length = 2.0
     ace.toolchange_load_length = 20.0
     ace.feed_slip_compensation_length = 0.0
+    ace.feed_speed = 80
+    ace.retract_speed = 80
     ace.feed_lengths = []
 
     def sensor_present(name):
@@ -171,6 +173,8 @@ def make_preload_ace(confirm=1, print_state="standby", upper=False,
     ace.motion_calls = []
     ace.cold_extruder_steps = []
     ace.feed_fast_speed = 160.0
+    ace.feed_speed = 80
+    ace.retract_speed = 80
     ace.retract_fast_speed = 120.0
     ace.toolchange_retract_length = 1200.0
     ace._feed_assist_index = -1
@@ -238,6 +242,19 @@ class FakeGcodeMove:
 
     def reset_last_position(self):
         self.reset_count += 1
+
+
+class FakeToolheadStatus:
+    def get_status(self, _eventtime):
+        return {"homed_axes": "xyz"}
+
+
+class FakeIdleTimeout:
+    def __init__(self, state="Ready"):
+        self.state = state
+
+    def get_status(self, _eventtime):
+        return {"state": self.state}
 
 
 def make_same_tool_ace(position="toolhead", upper=True, lower=True):
@@ -692,6 +709,137 @@ class AceToolchangePositionTests(unittest.TestCase):
                              for item in ace.gcode.scripts))
         self.assertEqual(
             ace.slot_positions[0], "preload_parked_estimated")
+
+
+class AceRuntimeSafetyTests(unittest.TestCase):
+    def test_full_unload_without_confirmation_never_moves(self):
+        ace, _gcmd = make_cross_tool_ace()
+        gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": 0})
+
+        ace.cmd_ACE_FULL_UNLOAD(gcmd)
+
+        self.assertEqual(ace.retract_calls, [])
+        self.assertTrue(any("CONFIRM=1" in message
+                            for message in gcmd.messages))
+
+    def test_full_unload_returns_current_slot_to_ace(self):
+        ace, _gcmd = make_cross_tool_ace()
+        gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": 1})
+
+        ace.cmd_ACE_FULL_UNLOAD(gcmd)
+
+        full_retract = next(call for call in ace.retract_calls
+                            if call[0] == "park")
+        self.assertEqual(full_retract[1:3], (0, 1200.0))
+        self.assertEqual(ace.slot_positions[0], "internal_or_unknown")
+        self.assertEqual(ace.variables["ace_current_index"], -1)
+
+    def test_manual_feed_without_confirmation_never_moves(self):
+        ace = make_motion_ace()
+        gcmd = FakeGcmd({
+            "INDEX": 0,
+            "LENGTH": 20,
+            "SPEED": 10,
+            "CONFIRM": 0,
+        })
+
+        ace.cmd_ACE_FEED(gcmd)
+
+        self.assertEqual(ace.feed_lengths, [])
+        self.assertTrue(any("CONFIRM=1" in message
+                            for message in gcmd.messages))
+
+    def test_manual_retract_without_confirmation_never_moves(self):
+        ace = make_motion_ace()
+        ace.retract_lengths = []
+        ace._retract = lambda _index, length, _speed: (
+            ace.retract_lengths.append(float(length)) or {})
+        gcmd = FakeGcmd({
+            "INDEX": 0,
+            "LENGTH": 20,
+            "SPEED": 10,
+            "CONFIRM": 0,
+        })
+
+        ace.cmd_ACE_RETRACT(gcmd)
+
+        self.assertEqual(ace.retract_lengths, [])
+        self.assertTrue(any("CONFIRM=1" in message
+                            for message in gcmd.messages))
+
+    def test_abort_active_feed_requests_protocol_stop(self):
+        ace = make_motion_ace()
+        ace._active_ace_motion = {"method": "feed_filament", "index": 2}
+        ace._toolchange_context = {"phase": "ACE_FEED_TO_UPPER"}
+        ace._pending_toolchange_recovery = None
+        ace._cancel_toolchange_recovery = lambda: None
+        ace._pending_feed_assist_restore = -1
+        ace._feed_assist_index = -1
+        ace._park_in_progress = True
+        ace.endless_spool_in_progress = False
+        ace.stop_calls = []
+        ace._stop_feed = lambda index: ace.stop_calls.append(("feed", index))
+        ace._stop_unwind = lambda index: ace.stop_calls.append(
+            ("unwind", index))
+        gcmd = FakeGcmd()
+
+        ace.cmd_ACE_ABORT_TOOLCHANGE(gcmd)
+
+        self.assertEqual(ace.stop_calls, [("feed", 2)])
+        self.assertTrue(ace._abort_requested)
+
+    def test_abort_active_retract_requests_protocol_stop(self):
+        ace = make_motion_ace()
+        ace._active_ace_motion = {"method": "unwind_filament", "index": 1}
+        ace._toolchange_context = {"phase": "OLD_BOWDEN_RETRACT"}
+        ace._pending_toolchange_recovery = None
+        ace._cancel_toolchange_recovery = lambda: None
+        ace._pending_feed_assist_restore = -1
+        ace._feed_assist_index = -1
+        ace._park_in_progress = True
+        ace.endless_spool_in_progress = False
+        ace.stop_calls = []
+        ace._stop_feed = lambda index: ace.stop_calls.append(("feed", index))
+        ace._stop_unwind = lambda index: ace.stop_calls.append(
+            ("unwind", index))
+
+        ace.cmd_ACE_ABORT_TOOLCHANGE(FakeGcmd())
+
+        self.assertEqual(ace.stop_calls, [("unwind", 1)])
+
+    def test_abort_active_motion_pauses_an_active_print(self):
+        ace = make_motion_ace()
+        ace.printer = FakePrinter("printing")
+        ace._active_ace_motion = {"method": "feed_filament", "index": 0}
+        ace._toolchange_context = {"phase": "ACE_FEED_TO_UPPER"}
+        ace._pending_toolchange_recovery = None
+        ace._cancel_toolchange_recovery = lambda: None
+        ace._pending_feed_assist_restore = -1
+        ace._feed_assist_index = -1
+        ace._park_in_progress = True
+        ace.endless_spool_in_progress = False
+        ace._stop_feed = lambda _index: None
+
+        ace.cmd_ACE_ABORT_TOOLCHANGE(FakeGcmd())
+
+        self.assertIn("PAUSE", ace.gcode.scripts)
+
+    def test_endless_spool_does_not_act_while_standby(self):
+        ace = make_motion_ace()
+        ace.endless_spool_enabled = True
+        ace._park_in_progress = False
+        ace.endless_spool_in_progress = False
+        ace.variables["ace_current_index"] = 0
+        ace.printer.objects["toolhead"] = FakeToolheadStatus()
+        ace.printer.objects["idle_timeout"] = FakeIdleTimeout("Ready")
+        ace.runout_calls = []
+        ace._endless_spool_runout_handler = lambda: (
+            ace.runout_calls.append("runout"))
+
+        next_time = ace._endless_spool_monitor(10.0)
+
+        self.assertEqual(ace.runout_calls, [])
+        self.assertEqual(next_time, 10.2)
 
 
 if __name__ == "__main__":
