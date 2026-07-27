@@ -1,4 +1,6 @@
 import type {
+  AceProAutoDryingReason,
+  AceProAutoDryingState,
   AceProDryerStatus,
   AceProEndlessSpoolState,
   AceProHardwareSlot,
@@ -111,6 +113,77 @@ function resolveWarnings (value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((warning): warning is string => typeof warning === 'string')
     : []
+}
+
+const AUTO_DRYING_REASONS: AceProAutoDryingReason[] = [
+  'EMPTY', 'UNKNOWN', 'PLA_MIXED', 'PLA_ONLY', 'HIGH_TEMP',
+]
+
+const AUTO_DRYING_BASIS: Record<AceProAutoDryingReason, string> = {
+  EMPTY: '未检测到耗材',
+  UNKNOWN: '未知材料',
+  PLA_MIXED: 'PLA 混装',
+  PLA_ONLY: '全部 PLA',
+  HIGH_TEMP: '高温材料',
+}
+
+function resolveAutoDrying (
+  value: unknown,
+  fallback?: AceProAutoDryingState
+): AceProAutoDryingState {
+  const available = isObject(value)
+  const raw = available ? value : {}
+  const rawReason = safeString(raw.reason, fallback?.reason ?? 'EMPTY')
+  const reason = AUTO_DRYING_REASONS.includes(rawReason as AceProAutoDryingReason)
+    ? rawReason as AceProAutoDryingReason
+    : 'UNKNOWN'
+  return {
+    available: available
+      ? safeBoolean(raw.available, true)
+      : (fallback?.available ?? false),
+    enabled: safeBoolean(raw.enabled, fallback?.enabled ?? false),
+    active: safeBoolean(raw.active, fallback?.active ?? false),
+    ownedByAuto: safeBoolean(raw.owned_by_auto, fallback?.ownedByAuto ?? false),
+    suppressedForJob: safeBoolean(
+      raw.suppressed_for_job,
+      fallback?.suppressedForJob ?? false
+    ),
+    temperature: safeNumber(raw.temperature, fallback?.temperature ?? 0),
+    reason,
+    printState: safeString(raw.print_state, fallback?.printState ?? 'standby'),
+    lastError: safeString(raw.last_error, fallback?.lastError ?? ''),
+    noticeId: safeNumber(raw.notice_id, fallback?.noticeId ?? 0),
+    noticeMessage: safeString(
+      raw.notice_message,
+      fallback?.noticeMessage ?? ''
+    ),
+  }
+}
+
+export function autoDryingStatusLabel (state: AceProAutoDryingState): string {
+  if (!state.available) return '状态不可用'
+  if (!state.enabled) return '已关闭'
+  if (state.active) return `运行中 ${state.temperature}°C`
+  return '已开启'
+}
+
+export function autoDryingBasisLabel (state: AceProAutoDryingState): string {
+  const basis = AUTO_DRYING_BASIS[state.reason]
+  return state.temperature > 0 ? `${state.temperature}°C · ${basis}` : basis
+}
+
+export function autoDryingWarningMessage (reason: AceProAutoDryingReason): string {
+  if (reason === 'PLA_MIXED') {
+    return '检测到 PLA 与其他材料混装，自动烘干使用 50°C 以保护 PLA；其他高温材料的烘干效果可能受限。'
+  }
+  if (reason === 'UNKNOWN') {
+    return '检测到未知材料，将以 45°C 进行自动烘干，部分材料的烘干效果可能受限。'
+  }
+  return ''
+}
+
+export function shouldShowAceNotice (incoming: number, seen: number): boolean {
+  return incoming > 0 && incoming > seen
 }
 
 export function detectAceProObjectKey (printerState: PrinterState): string | undefined {
@@ -283,6 +356,7 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
       cancelRequested: false,
     },
     endlessSpool: resolveAceProEndlessSpool(printerState),
+    autoDrying: resolveAutoDrying(acePro?.auto_drying),
     dryer: resolveAceProDryer(printerState),
     slots,
   }
@@ -314,6 +388,7 @@ export function resolveAceProApiState (
     })
 
     const dryer = isObject(payload.dryer) ? payload.dryer : {}
+    const autoDrying = isObject(payload.auto_drying) ? payload.auto_drying : undefined
     const endlessSpool = isObject(payload.endless_spool) ? payload.endless_spool : {}
     const sensors = isObject(payload.sensors) ? payload.sensors : {}
     const fallbackUpper = fallback?.sensors.upper ?? resolveSensor({}, 'extruder_sensor')
@@ -354,6 +429,7 @@ export function resolveAceProApiState (
         runoutDetected: safeBoolean(endlessSpool.runout_detected, false),
         inProgress: safeBoolean(endlessSpool.in_progress, false),
       },
+      autoDrying: resolveAutoDrying(autoDrying, fallback?.autoDrying),
       dryer: {
         status: safeString(dryer.status, 'stop'),
         target_temp: safeNumber(dryer.target_temperature),
@@ -365,6 +441,7 @@ export function resolveAceProApiState (
   }
 
   const manager = isObject(payload.ace_manager) ? payload.ace_manager : {}
+  const autoDrying = isObject(payload.auto_drying) ? payload.auto_drying : undefined
   const dryer = isObject(payload.dryer_status) ? payload.dryer_status : {}
   const dryerDuration = safeNumber(dryer.duration, fallback?.dryer.duration ?? 0)
   const rawRemainTime = safeNumber(dryer.remain_time, fallback?.dryer.remain_time ?? 0)
@@ -439,6 +516,7 @@ export function resolveAceProApiState (
       runoutDetected: safeBoolean(manager.runout_detected, fallback?.endlessSpool.runoutDetected ?? false),
       inProgress: safeBoolean(manager.in_progress, fallback?.endlessSpool.inProgress ?? false),
     },
+    autoDrying: resolveAutoDrying(autoDrying, fallback?.autoDrying),
     dryer: {
       status: safeString(dryer.status, fallback?.dryer.status ?? 'stop'),
       target_temp: safeNumber(dryer.target_temp, fallback?.dryer.target_temp ?? 0),

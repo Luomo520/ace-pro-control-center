@@ -26,6 +26,27 @@ export interface AceProEndlessSpoolState {
   inProgress: boolean;
 }
 
+export type AceProAutoDryingReason =
+  | 'EMPTY'
+  | 'UNKNOWN'
+  | 'PLA_MIXED'
+  | 'PLA_ONLY'
+  | 'HIGH_TEMP'
+
+export interface AceProAutoDryingState {
+  available: boolean;
+  enabled: boolean;
+  active: boolean;
+  ownedByAuto: boolean;
+  suppressedForJob: boolean;
+  temperature: number;
+  reason: AceProAutoDryingReason;
+  printState: string;
+  lastError: string;
+  noticeId: number;
+  noticeMessage: string;
+}
+
 export interface AceProSensorState {
   name: string;
   available: boolean;
@@ -76,6 +97,7 @@ export interface AceProResolvedState {
     cancelRequested: boolean;
   };
   endlessSpool: AceProEndlessSpoolState;
+  autoDrying: AceProAutoDryingState;
   dryer: AceProDryerStatus;
   slots: AceProResolvedSlot[];
 }

@@ -3,6 +3,9 @@ import StateMixin from '@/mixins/state'
 import { getAceStatus, runAceCommand } from '@/api/acePro'
 import type { AceProResolvedSlot, AceProResolvedState } from '@/types/acePro'
 import {
+  autoDryingBasisLabel,
+  autoDryingStatusLabel,
+  autoDryingWarningMessage,
   buildAceSetSlotGcode,
   detectAceProObjectKey,
   hasAceProConfig,
@@ -11,6 +14,7 @@ import {
   resolveAceProState,
   rgbToCss,
   rgbToHex,
+  shouldShowAceNotice,
 } from '@/util/acepro'
 
 const WAIT_REFRESH = 'acepro-refresh'
@@ -25,6 +29,7 @@ export default class AceProMixin extends StateMixin {
   aceProApiWaits: string[] = []
   aceProPollTimer: ReturnType<typeof setInterval> | null = null
   aceProLastError = ''
+  aceProLastNoticeId: number | null = null
 
   created () {
     this.pollAceProApi()
@@ -113,6 +118,18 @@ export default class AceProMixin extends StateMixin {
     return `${dryer.target_temp}C，${dryer.status}${remainTime}`
   }
 
+  get aceProAutoDryingStatusLabel (): string {
+    return autoDryingStatusLabel(this.aceProState.autoDrying)
+  }
+
+  get aceProAutoDryingBasisLabel (): string {
+    return autoDryingBasisLabel(this.aceProState.autoDrying)
+  }
+
+  get aceProAutoDryingAvailable (): boolean {
+    return this.aceProState.autoDrying.available
+  }
+
   get aceProWaitRefresh (): string {
     return WAIT_REFRESH
   }
@@ -148,12 +165,38 @@ export default class AceProMixin extends StateMixin {
 
   async pollAceProApi () {
     try {
-      this.aceProApiStatus = await getAceStatus()
+      const status = await getAceStatus()
+      const resolved = resolveAceProApiState(
+        status,
+        resolveAceProState(this.aceProPrinterState)
+      )
+      this.aceProApiStatus = status
       this.aceProApiAvailable = true
+      await this.handleAceProAutoDryingNotice(resolved)
     } catch {
       this.aceProApiAvailable = false
       this.aceProApiStatus = null
     }
+  }
+
+  private async handleAceProAutoDryingNotice (state: AceProResolvedState) {
+    const notice = state.autoDrying
+    if (this.aceProLastNoticeId == null) {
+      this.aceProLastNoticeId = notice.noticeId
+      return
+    }
+    if (!shouldShowAceNotice(notice.noticeId, this.aceProLastNoticeId)) return
+    this.aceProLastNoticeId = notice.noticeId
+    const description = notice.noticeMessage || notice.lastError
+    if (!description) return
+    await this.$typedDispatch('notifications/pushNotification', {
+      id: `ace-auto-drying-${notice.noticeId}`,
+      type: notice.lastError ? 'error' : 'info',
+      title: 'ACE Pro 自动烘干',
+      description,
+      snackbar: true,
+      clear: true,
+    })
   }
 
   private async executeAceCommand (
@@ -271,6 +314,21 @@ export default class AceProMixin extends StateMixin {
   async toggleEndlessSpool (enabled: boolean) {
     const command = enabled ? 'ACE_ENABLE_ENDLESS_SPOOL' : 'ACE_DISABLE_ENDLESS_SPOOL'
     await this.executeAceCommand(command, {}, WAIT_SLOT_ACTION, command)
+  }
+
+  async toggleAceProAutoDrying (enabled: boolean) {
+    const autoDrying = this.aceProState.autoDrying
+    if (enabled && (autoDrying.reason === 'PLA_MIXED' || autoDrying.reason === 'UNKNOWN')) {
+      const accepted = await this.$confirm(
+        autoDryingWarningMessage(autoDrying.reason),
+        { title: 'ACE Pro 自动烘干', color: 'card-heading', icon: '$warning' }
+      )
+      if (!accepted) return
+    }
+    const command = enabled
+      ? 'ACE_ENABLE_AUTO_DRYING'
+      : 'ACE_DISABLE_AUTO_DRYING'
+    await this.executeAceCommand(command, {}, WAIT_DRYER_ACTION, command)
   }
 
   async startDrying (temperature: number, duration: number) {

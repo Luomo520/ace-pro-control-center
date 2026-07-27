@@ -146,6 +146,10 @@
               <span>无限续料</span>
               <strong>{{ aceProState.endlessSpool.enabled ? '已开启' : '已关闭' }}</strong>
             </div>
+            <div class="acepro-info-item">
+              <span>自动烘干</span>
+              <strong>{{ aceProAutoDryingStatusLabel }}</strong>
+            </div>
           </div>
         </section>
 
@@ -199,6 +203,27 @@
                 <span>剩余时间</span>
                 <strong>{{ remainTimeText }}</strong>
               </div>
+            </div>
+
+            <div class="acepro-auto-drying">
+              <div class="acepro-auto-drying__copy">
+                <strong>自动跟随打印</strong>
+                <span>{{ aceProAutoDryingBasisLabel }}</span>
+              </div>
+              <v-switch
+                :input-value="aceProState.autoDrying.enabled"
+                inset
+                hide-details
+                :disabled="!aceProAutoDryingAvailable || aceProHasWait(aceProWaitDryerAction)"
+                :loading="aceProHasWait(aceProWaitDryerAction)"
+                @change="toggleAceProAutoDrying"
+              />
+            </div>
+            <div
+              v-if="aceProState.autoDrying.lastError"
+              class="acepro-auto-drying__error"
+            >
+              {{ aceProState.autoDrying.lastError }}
             </div>
 
             <div class="acepro-dryer__actions">
@@ -791,6 +816,42 @@ export default class AceProCard extends Mixins(AceProMixin) {
   margin-top: 6px;
 }
 
+.acepro-auto-drying {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+  margin-top: 6px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(12, 16, 21, 0.56);
+  border: 1px solid rgba(56, 66, 79, 0.4);
+}
+
+.acepro-auto-drying__copy {
+  display: grid;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.acepro-auto-drying__copy span {
+  color: #aeb9c8;
+  overflow-wrap: anywhere;
+}
+
+.acepro-auto-drying__error {
+  margin-top: 3px;
+  font-size: 10px;
+  color: #fca5a5;
+}
+
+.acepro-auto-drying ::v-deep .v-input--selection-controls {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+}
+
 .acepro-quick-actions {
   display: flex;
   align-items: center;
@@ -836,7 +897,8 @@ export default class AceProCard extends Mixins(AceProMixin) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
+  flex: 0 0 auto;
+  min-height: 30px;
   padding: 2px 6px;
   border-radius: 6px;
   background: rgba(12, 16, 21, 0.56);
