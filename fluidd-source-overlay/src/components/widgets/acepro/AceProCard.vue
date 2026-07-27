@@ -301,7 +301,7 @@
         v-if="collapseExtraFunctions"
         type="button"
         class="acepro-more-toggle"
-        :aria-expanded="showExtraFunctions"
+        :aria-expanded="showExtraFunctions ? 'true' : 'false'"
         @click="extraFunctionsOpen = !extraFunctionsOpen"
       >
         <span>更多功能</span>

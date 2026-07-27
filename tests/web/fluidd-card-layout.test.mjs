@@ -14,7 +14,7 @@ test('dashboard folds advanced ACE controls behind more features', async () => {
 
   assert.match(card, /readonly collapseExtraFunctions!:\s*boolean/)
   assert.match(card, /更多功能/)
-  assert.match(card, /:aria-expanded="showExtraFunctions"/)
+  assert.match(card, /:aria-expanded="showExtraFunctions \? 'true' : 'false'"/)
   assert.match(
     card,
     /<v-expand-transition>[\s\S]*v-show="showExtraFunctions"[\s\S]*acepro-panel--calibration[\s\S]*acepro-panel--manual[\s\S]*acepro-panel--quick[\s\S]*<\/v-expand-transition>/
