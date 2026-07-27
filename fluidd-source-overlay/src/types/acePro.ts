@@ -53,6 +53,29 @@ export interface AceProSensorState {
   detected: boolean;
 }
 
+export type AceProSlotPosition =
+  | 'internal_or_unknown'
+  | 'preload_parked_estimated'
+  | 'upper_sensor'
+  | 'toolhead'
+  | 'nozzle'
+  | 'unknown'
+
+export interface AceProCalibrationState {
+  available: boolean;
+  valid: boolean;
+  stale: boolean;
+  phase: string;
+  selectedSlot: number;
+  feedCompleted: number;
+  feedUpperBound: number;
+  sensorClearCompleted: number;
+  sensorClearUpperBound: number;
+  retractDistance: number;
+  parkingDistance: number;
+  lastError: string;
+}
+
 export interface AceProResolvedSlot {
   index: number;
   isActive: boolean;
@@ -64,6 +87,7 @@ export interface AceProResolvedSlot {
   sku: string;
   type: string;
   ready: boolean;
+  position: AceProSlotPosition;
 }
 
 export interface AceProResolvedState {
@@ -83,6 +107,11 @@ export interface AceProResolvedState {
   usbPath: string;
   currentIndex: number;
   feedAssistIndex: number;
+  slotPositions: AceProSlotPosition[];
+  filamentPosition: AceProSlotPosition;
+  motionOwner: string;
+  activeMotion: Record<string, any>;
+  calibration: AceProCalibrationState;
   sensors: {
     upper: AceProSensorState;
     lower: AceProSensorState;

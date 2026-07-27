@@ -1,6 +1,7 @@
 import type {
   AceProAutoDryingReason,
   AceProAutoDryingState,
+  AceProCalibrationState,
   AceProDryerStatus,
   AceProEndlessSpoolState,
   AceProHardwareSlot,
@@ -8,11 +9,20 @@ import type {
   AceProResolvedSlot,
   AceProResolvedState,
   AceProSensorState,
+  AceProSlotPosition,
 } from '@/types/acePro'
 
 type PrinterState = Record<string, any>
 
 const EMPTY_COLOR: [number, number, number] = [0, 0, 0]
+const SLOT_POSITIONS: AceProSlotPosition[] = [
+  'internal_or_unknown',
+  'preload_parked_estimated',
+  'upper_sensor',
+  'toolhead',
+  'nozzle',
+  'unknown',
+]
 
 function isObject (value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null
@@ -113,6 +123,50 @@ function resolveWarnings (value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((warning): warning is string => typeof warning === 'string')
     : []
+}
+
+function normalizeSlotPosition (value: unknown): AceProSlotPosition {
+  return typeof value === 'string' && SLOT_POSITIONS.includes(value as AceProSlotPosition)
+    ? value as AceProSlotPosition
+    : 'unknown'
+}
+
+function resolveSlotPositions (value: unknown): AceProSlotPosition[] {
+  const parsed = parseJsonIfNeeded<unknown[]>(value, [])
+  return Array.from({ length: 4 }, (_, index) => normalizeSlotPosition(parsed[index]))
+}
+
+function resolveCalibration (
+  value: unknown,
+  fallback?: AceProCalibrationState
+): AceProCalibrationState {
+  const available = isObject(value)
+  const raw = available ? value : {}
+  return {
+    available: available
+      ? safeBoolean(raw.available, true)
+      : (fallback?.available ?? false),
+    valid: safeBoolean(raw.valid, fallback?.valid ?? false),
+    stale: safeBoolean(raw.stale, fallback?.stale ?? false),
+    phase: safeString(
+      raw.phase,
+      fallback?.phase ?? (available ? 'idle' : 'unavailable')
+    ),
+    selectedSlot: safeNumber(raw.selected_slot, fallback?.selectedSlot ?? -1),
+    feedCompleted: safeNumber(raw.feed_completed, fallback?.feedCompleted ?? 0),
+    feedUpperBound: safeNumber(raw.feed_upper_bound, fallback?.feedUpperBound ?? 0),
+    sensorClearCompleted: safeNumber(
+      raw.sensor_clear_completed,
+      fallback?.sensorClearCompleted ?? 0
+    ),
+    sensorClearUpperBound: safeNumber(
+      raw.sensor_clear_upper_bound,
+      fallback?.sensorClearUpperBound ?? 0
+    ),
+    retractDistance: safeNumber(raw.retract_distance, fallback?.retractDistance ?? 0),
+    parkingDistance: safeNumber(raw.parking_distance, fallback?.parkingDistance ?? 0),
+    lastError: safeString(raw.last_error, fallback?.lastError ?? ''),
+  }
 }
 
 const AUTO_DRYING_REASONS: AceProAutoDryingReason[] = [
@@ -301,6 +355,11 @@ export function resolveAceProSlots (printerState: PrinterState): AceProResolvedS
   const inventory = resolveAceProInventory(printerState)
   const hardwareSlots = resolveAceProHardwareSlots(printerState)
   const currentIndex = resolveAceProCurrentIndex(printerState)
+  const acePro = getAceProObject(printerState)
+  const variables = getAceProVariables(printerState)
+  const slotPositions = resolveSlotPositions(
+    acePro?.slot_positions ?? variables.ace_slot_positions
+  )
 
   return inventory.map((inventorySlot, index) => {
     const hardwareSlot = hardwareSlots[index]
@@ -319,6 +378,7 @@ export function resolveAceProSlots (printerState: PrinterState): AceProResolvedS
       sku: hardwareSlot.sku ?? '',
       type: hardwareSlot.type ?? '',
       ready,
+      position: slotPositions[index],
     }
   })
 }
@@ -328,6 +388,11 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
   const acePro = getAceProObject(printerState)
   const slots = resolveAceProSlots(printerState)
   const detected = aceProObjectKey != null || hasAceProConfig(printerState) || slots.some(slot => slot.material !== '')
+  const variables = getAceProVariables(printerState)
+  const slotPositions = resolveSlotPositions(
+    acePro?.slot_positions ?? variables.ace_slot_positions
+  )
+  const currentIndex = resolveAceProCurrentIndex(printerState)
 
   return {
     detected,
@@ -344,8 +409,15 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
     rfidEnabled: safeBoolean(acePro?.enable_rfid, false),
     usbPort: safeString(acePro?.usb_port),
     usbPath: safeString(acePro?.usb_path),
-    currentIndex: resolveAceProCurrentIndex(printerState),
+    currentIndex,
     feedAssistIndex: safeNumber(acePro?.feed_assist_index, -1),
+    slotPositions,
+    filamentPosition: normalizeSlotPosition(
+      acePro?.filament_position ?? slotPositions[currentIndex]
+    ),
+    motionOwner: safeString(acePro?.motion_owner),
+    activeMotion: isObject(acePro?.active_motion) ? acePro.active_motion : {},
+    calibration: resolveCalibration(acePro?.calibration),
     sensors: {
       upper: resolveSensor(printerState, 'extruder_sensor'),
       lower: resolveSensor(printerState, 'toolhead_sensor'),
@@ -388,6 +460,7 @@ export function resolveAceProApiState (
         sku: '',
         type: safeString(slot.material),
         ready: status === 'ready',
+        position: normalizeSlotPosition(payload.slot_positions?.[index]),
       }
     })
 
@@ -397,6 +470,8 @@ export function resolveAceProApiState (
     const sensors = isObject(payload.sensors) ? payload.sensors : {}
     const fallbackUpper = fallback?.sensors.upper ?? resolveSensor({}, 'extruder_sensor')
     const fallbackLower = fallback?.sensors.lower ?? resolveSensor({}, 'toolhead_sensor')
+    const slotPositions = resolveSlotPositions(payload.slot_positions)
+    const currentIndex = safeNumber(payload.current_tool, -1)
 
     return {
       detected: true,
@@ -413,8 +488,15 @@ export function resolveAceProApiState (
       rfidEnabled: false,
       usbPort: '',
       usbPath: '',
-      currentIndex: safeNumber(payload.current_tool, -1),
+      currentIndex,
       feedAssistIndex: safeNumber(payload.feed_assist_index, -1),
+      slotPositions,
+      filamentPosition: normalizeSlotPosition(
+        payload.filament_position ?? slotPositions[currentIndex]
+      ),
+      motionOwner: safeString(payload.motion_owner),
+      activeMotion: isObject(payload.active_motion) ? payload.active_motion : {},
+      calibration: resolveCalibration(payload.calibration, fallback?.calibration),
       sensors: {
         upper: resolveApiSensor(sensors.upper, fallbackUpper),
         lower: resolveApiSensor(sensors.lower, fallbackLower),
@@ -473,6 +555,7 @@ export function resolveAceProApiState (
       sku: safeString(slot.sku, fallbackSlot?.sku ?? ''),
       type: safeString(slot.type, fallbackSlot?.type ?? ''),
       ready: status === 'ready',
+      position: fallbackSlot?.position ?? 'unknown',
     }
   })
 
@@ -494,6 +577,15 @@ export function resolveAceProApiState (
     usbPath: safeString(payload.usb_path, fallback?.usbPath ?? ''),
     currentIndex,
     feedAssistIndex: safeNumber(payload.feed_assist_index, fallback?.feedAssistIndex ?? -1),
+    slotPositions: fallback?.slotPositions ?? resolveSlotPositions(undefined),
+    filamentPosition: normalizeSlotPosition(
+      payload.filament_position ?? fallback?.filamentPosition
+    ),
+    motionOwner: safeString(payload.motion_owner, fallback?.motionOwner ?? ''),
+    activeMotion: isObject(payload.active_motion)
+      ? payload.active_motion
+      : (fallback?.activeMotion ?? {}),
+    calibration: resolveCalibration(payload.calibration, fallback?.calibration),
     sensors: fallback?.sensors ?? {
       upper: resolveSensor({}, 'extruder_sensor'),
       lower: resolveSensor({}, 'toolhead_sensor'),

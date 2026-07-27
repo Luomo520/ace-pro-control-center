@@ -3186,11 +3186,46 @@ class BunnyAce:
             'active': context is not None,
             'context': context,
             'last_error': self._toolchange_last_error,
+            'cancel_requested': self._abort_requested,
         }
         status['intermittent_feed'] = self.intermittent_feed
         status['intermittent_retract'] = self.intermittent_retract
         status['ace_stop_ready_timeout'] = self.ace_stop_ready_timeout
         status['slot_positions'] = list(self.slot_positions)
+        status['motion_owner'] = self._motion_owner or ''
+        status['active_motion'] = copy.deepcopy(
+            self._active_ace_motion) or {}
+        calibration_source = (
+            self._calibration_preview
+            if isinstance(self._calibration_preview, dict)
+            else self.calibration_record
+            if isinstance(self.calibration_record, dict)
+            else {})
+        calibration_valid = calibration_is_valid(
+            self.calibration_record,
+            self.bowden_tube_length,
+            self.five_way_parking_margin)
+        status['calibration'] = {
+            'available': True,
+            'valid': calibration_valid,
+            'stale': bool(self.calibration_record) and not calibration_valid,
+            'phase': self._calibration_phase,
+            'selected_slot': int(
+                calibration_source.get('source_slot', -1)),
+            'feed_completed': float(
+                calibration_source.get('feed_completed', 0.)),
+            'feed_upper_bound': float(
+                calibration_source.get('feed_upper_bound', 0.)),
+            'sensor_clear_completed': float(
+                calibration_source.get('sensor_clear_completed', 0.)),
+            'sensor_clear_upper_bound': float(
+                calibration_source.get('sensor_clear_upper_bound', 0.)),
+            'retract_distance': float(
+                calibration_source.get('retract_distance', 0.)),
+            'parking_distance': float(
+                calibration_source.get('parking_distance', 0.)),
+            'last_error': self._calibration_last_error,
+        }
         try:
             current_index = int(self.variables.get('ace_current_index', -1))
         except (TypeError, ValueError):

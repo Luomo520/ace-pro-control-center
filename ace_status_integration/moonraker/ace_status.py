@@ -9,6 +9,14 @@ from typing import Any, Callable, Dict, Mapping, Optional
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._+-]{1,24}$")
 DEFAULT_UPPER_SENSOR = "extruder_sensor"
 DEFAULT_LOWER_SENSOR = "toolhead_sensor"
+SLOT_POSITIONS = {
+    "internal_or_unknown",
+    "preload_parked_estimated",
+    "upper_sensor",
+    "toolhead",
+    "nozzle",
+    "unknown",
+}
 
 
 class AceRequestError(ValueError):
@@ -152,6 +160,41 @@ def _normalize_auto_drying(value: Any) -> Dict[str, Any]:
     }
 
 
+def _normalize_slot_positions(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = []
+    if not isinstance(value, list):
+        value = []
+    return [
+        str(value[index])
+        if index < len(value) and str(value[index]) in SLOT_POSITIONS
+        else "unknown"
+        for index in range(4)
+    ]
+
+
+def _normalize_calibration(value: Any, available: bool = False) -> Dict[str, Any]:
+    raw = _as_dict(value)
+    is_available = _safe_bool(raw.get("available"), available or bool(raw))
+    return {
+        "available": is_available,
+        "valid": _safe_bool(raw.get("valid"), False) if is_available else False,
+        "stale": _safe_bool(raw.get("stale"), False) if is_available else False,
+        "phase": str(raw.get("phase") or ("idle" if is_available else "unavailable")),
+        "selected_slot": _safe_int(raw.get("selected_slot"), -1),
+        "feed_completed": _safe_float(raw.get("feed_completed")),
+        "feed_upper_bound": _safe_float(raw.get("feed_upper_bound")),
+        "sensor_clear_completed": _safe_float(raw.get("sensor_clear_completed")),
+        "sensor_clear_upper_bound": _safe_float(raw.get("sensor_clear_upper_bound")),
+        "retract_distance": _safe_float(raw.get("retract_distance")),
+        "parking_distance": _safe_float(raw.get("parking_distance")),
+        "last_error": str(raw.get("last_error") or ""),
+    }
+
+
 def normalize_status(
     ace: Mapping[str, Any],
     variables: Mapping[str, Any],
@@ -168,6 +211,13 @@ def normalize_status(
     connection = _as_dict(ace.get("connection"))
     toolchange = _as_dict(ace.get("toolchange"))
     current_tool = _safe_int(variables.get("ace_current_index"), -1)
+    slot_positions = _normalize_slot_positions(
+        ace.get("slot_positions", variables.get("ace_slot_positions")))
+    calibration_raw = ace.get("calibration")
+    calibration = _normalize_calibration(
+        calibration_raw,
+        available=isinstance(calibration_raw, Mapping),
+    )
     slots = _parse_inventory(variables.get("ace_inventory"))
 
     hardware_slots = ace.get("slots")
@@ -215,6 +265,14 @@ def normalize_status(
         "temperature": _safe_float(ace.get("temp")),
         "fan_speed": _safe_int(ace.get("fan_speed")),
         "feed_assist_index": _safe_int(ace.get("feed_assist_index"), -1),
+        "slot_positions": slot_positions,
+        "filament_position": str(
+            ace.get("filament_position")
+            or (slot_positions[current_tool] if 0 <= current_tool < 4
+                else "unknown")),
+        "motion_owner": str(ace.get("motion_owner") or ""),
+        "active_motion": _as_dict(ace.get("active_motion")),
+        "calibration": calibration,
         "dryer": dryer,
         "auto_drying": _normalize_auto_drying(ace.get("auto_drying")),
         "sensors": {

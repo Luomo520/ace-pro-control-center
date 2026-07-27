@@ -135,6 +135,55 @@ class AceStatusContractTests(unittest.TestCase):
         self.assertTrue(status["sensors"]["upper"]["detected"])
         self.assertFalse(status["sensors"]["lower"]["detected"])
 
+    def test_normalizes_slot_positions_and_calibration_state(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "slot_positions": [
+                    "preload_parked_estimated",
+                    "unknown",
+                    "toolhead",
+                    "internal_or_unknown",
+                ],
+                "filament_position": "toolhead",
+                "motion_owner": "距离送料标定",
+                "calibration": {
+                    "available": True,
+                    "valid": True,
+                    "stale": False,
+                    "phase": "feed_complete",
+                    "selected_slot": 2,
+                    "feed_completed": 1200,
+                    "feed_upper_bound": 1205,
+                    "retract_distance": 1035,
+                    "parking_distance": 1035,
+                    "last_error": "",
+                },
+            },
+            {"ace_current_index": 2},
+            {},
+            {},
+        )
+
+        self.assertEqual(
+            status["slot_positions"][0],
+            "preload_parked_estimated",
+        )
+        self.assertEqual(status["filament_position"], "toolhead")
+        self.assertEqual(status["motion_owner"], "距离送料标定")
+        self.assertTrue(status["calibration"]["valid"])
+        self.assertEqual(
+            status["calibration"]["feed_upper_bound"], 1205)
+        self.assertEqual(
+            status["calibration"]["parking_distance"], 1035)
+
+    def test_missing_calibration_is_unavailable_not_valid_zero(self):
+        status = ace_status.normalize_status({}, {}, {}, {})
+
+        self.assertFalse(status["calibration"]["available"])
+        self.assertFalse(status["calibration"]["valid"])
+        self.assertEqual(status["calibration"]["phase"], "unavailable")
+
     def test_normalizes_alternate_dryer_status_fields(self):
         status = ace_status.normalize_status(
             {

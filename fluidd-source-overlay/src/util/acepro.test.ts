@@ -36,6 +36,45 @@ describe('ACEPROSV08 Fluidd adapter', () => {
     expect(state.slots[0].color).toEqual([12, 34, 56])
   })
 
+  it('normalizes calibration and per-slot filament positions', () => {
+    const state = resolveAceProApiState({
+      api_version: 1,
+      driver: 'ACEPROSV08',
+      slot_positions: [
+        'preload_parked_estimated',
+        'unknown',
+        'toolhead',
+        'internal_or_unknown',
+      ],
+      filament_position: 'toolhead',
+      motion_owner: '距离送料标定',
+      calibration: {
+        available: true,
+        valid: true,
+        stale: false,
+        phase: 'feed_complete',
+        selected_slot: 2,
+        feed_completed: 1200,
+        feed_upper_bound: 1205,
+        retract_distance: 1035,
+        parking_distance: 1035,
+        last_error: '',
+      },
+    })
+
+    expect(state.slotPositions).toEqual([
+      'preload_parked_estimated',
+      'unknown',
+      'toolhead',
+      'internal_or_unknown',
+    ])
+    expect(state.filamentPosition).toBe('toolhead')
+    expect(state.motionOwner).toBe('距离送料标定')
+    expect(state.calibration.valid).toBe(true)
+    expect(state.calibration.feedUpperBound).toBe(1205)
+    expect(state.calibration.parkingDistance).toBe(1035)
+  })
+
   it('builds inventory G-code with INDEX and never the Kobra-S1 T parameter', () => {
     const gcode = buildAceSetSlotGcode(1, 'petg', [1, 2, 3], 240)
 
