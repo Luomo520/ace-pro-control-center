@@ -16,8 +16,24 @@
       </app-btn>
     </template>
 
+    <v-card-text v-if="aceProApiLoading">
+      <v-alert
+        dense
+        outlined
+        type="info"
+      >
+        <v-progress-circular
+          indeterminate
+          size="18"
+          width="2"
+          class="mr-2"
+        />
+        正在读取 ACE Pro 状态...
+      </v-alert>
+    </v-card-text>
+
     <v-card-text
-      v-if="aceProSupportsUi"
+      v-else-if="aceProSupportsUi"
       class="acepro-card"
     >
       <div class="acepro-card__header">
@@ -905,6 +921,16 @@ export default class AceProCard extends Mixins(AceProMixin) {
   border: 1px solid rgba(56, 66, 79, 0.4);
 }
 
+.acepro-quick-actions__switch ::v-deep .v-input--selection-controls {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+}
+
+.acepro-quick-actions__switch ::v-deep .v-input__slot {
+  margin: 0;
+}
+
 @media (min-width: 961px) {
   .acepro-card__header {
     padding: 6px 10px;
@@ -958,6 +984,10 @@ export default class AceProCard extends Mixins(AceProMixin) {
     gap: 3px;
   }
 
+  .acepro-dryer__status {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .acepro-info-item {
     min-height: 26px;
     padding: 3px 5px;
@@ -994,12 +1024,22 @@ export default class AceProCard extends Mixins(AceProMixin) {
     margin-top: 4px;
   }
 
+  .acepro-auto-drying {
+    min-height: 30px;
+    margin-top: 4px;
+    padding: 2px 5px;
+  }
+
   .acepro-dryer__actions ::v-deep .v-btn,
   .acepro-quick-actions ::v-deep .v-btn,
   .acepro-manual-controls ::v-deep .v-btn {
     min-height: 28px;
     padding: 0 8px;
     font-size: 10px;
+  }
+
+  .acepro-dryer__actions ::v-deep .v-btn {
+    min-height: 26px;
   }
 
   .acepro-slot-grid {

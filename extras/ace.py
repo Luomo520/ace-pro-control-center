@@ -2,7 +2,7 @@ import serial, threading, time, logging, json, struct, queue, traceback, re, cop
 from serial import SerialException
 import serial.tools.list_ports
 
-ACEPROSV08_DRIVER_VERSION = "1.0.0-luomo"
+ACEPROSV08_DRIVER_VERSION = "1.1.0-luomo"
 
 AUTO_DRYING_DURATION_MINUTES = 1440
 AUTO_DRYING_KNOWN_MATERIALS = {
@@ -163,6 +163,8 @@ class BunnyAce:
         self._auto_drying_job_active = False
         self._auto_drying_print_samples = 0
         self._auto_drying_pending_action = None
+        self._auto_drying_pending_token = None
+        self._auto_drying_stop_required = False
         self._auto_drying_temperature_ceiling = 0
         self._auto_drying_notices_seen = set()
         self._auto_drying_retry_count = 0
@@ -846,33 +848,83 @@ class BunnyAce:
             message,
             force=True)
 
+    def _clear_auto_drying_pending(self):
+        action = self._auto_drying_pending_action
+        self._auto_drying_pending_action = None
+        self._auto_drying_pending_token = None
+        return action
+
+    def _auto_drying_can_retry(self, eventtime):
+        return (
+            self._auto_drying_retry_count < self._auto_drying_max_retries
+            and eventtime >= self._auto_drying_next_retry)
+
+    def _reconcile_auto_drying_pending(self, eventtime, print_state):
+        token = self._auto_drying_pending_token
+        if (self._auto_drying_pending_action is None or token is None
+                or not token.get('done') or not token.get('lost')):
+            return
+        action = self._clear_auto_drying_pending()
+        self._auto_drying_retry_count += 1
+        self._record_auto_drying_failure(
+            eventtime,
+            '%s请求因连接中断未确认：%s' % (
+                '启动' if action == 'start' else '停止',
+                token.get('reason') or '未知原因'))
+        if (action == 'stop'
+                or (action == 'start' and token.get('sent')
+                    and print_state in (
+                        'complete', 'cancelled', 'error', 'standby'))):
+            self._auto_drying_stop_required = True
+
     def _queue_auto_drying_start(self, temperature, eventtime):
         if self._auto_drying_pending_action is not None:
             return False
         if not self._connected:
             return False
+        if not self._auto_drying_can_retry(eventtime):
+            return False
+        temperature = min(
+            int(temperature), int(self.max_dryer_temperature))
+        if temperature <= 0:
+            return False
         self._auto_drying_pending_action = 'start'
+        self._auto_drying_pending_token = None
 
         def callback(self, response):
-            self._auto_drying_pending_action = None
+            self._clear_auto_drying_pending()
             if response.get('code', 0) != 0:
                 self._auto_drying_retry_count += 1
                 self._record_auto_drying_failure(
                     self.reactor.monotonic(),
                     '启动失败：%s' % response.get('msg', '未知错误'))
                 return
+            self._auto_drying_retry_count = 0
+            self._auto_drying_next_retry = 0.
             self.auto_drying_active = True
             self.auto_drying_owned_by_auto = True
             self.auto_drying_temperature = temperature
             self._auto_drying_temperature_ceiling = temperature
             self.auto_drying_last_error = ''
+            dryer = self._info.setdefault('dryer', {})
+            dryer['status'] = 'drying'
+            dryer['target_temp'] = temperature
+            dryer['duration'] = AUTO_DRYING_DURATION_MINUTES
+            dryer['remain_time'] = AUTO_DRYING_DURATION_MINUTES
+            if (self._auto_drying_stop_required
+                    or not self._auto_drying_job_active
+                    or not self.auto_drying_enabled
+                    or self.auto_drying_suppressed_for_job):
+                self._auto_drying_stop_required = True
+                self._queue_auto_drying_stop(self.reactor.monotonic())
+                return
             self._publish_auto_drying_notice(
                 'START_%s' % self.auto_drying_reason,
                 '已随打印启动，目标温度 %d°C。' % temperature,
                 force=True)
 
         try:
-            self.send_request(
+            token = self.send_request(
                 request={
                     'method': 'drying',
                     'params': {
@@ -883,9 +935,11 @@ class BunnyAce:
                 },
                 callback=callback,
                 operation='自动烘干启动')
+            if self._auto_drying_pending_action == 'start':
+                self._auto_drying_pending_token = token
             return True
         except Exception as exc:
-            self._auto_drying_pending_action = None
+            self._clear_auto_drying_pending()
             self._auto_drying_retry_count += 1
             self._record_auto_drying_failure(
                 eventtime, '启动失败：%s' % exc)
@@ -895,20 +949,30 @@ class BunnyAce:
         if self._auto_drying_pending_action is not None:
             return False
         if not self._connected:
-            self._record_auto_drying_failure(
-                eventtime, 'ACE 未连接，暂时无法停止自动烘干。')
+            return False
+        if not self._auto_drying_can_retry(eventtime):
             return False
         self._auto_drying_pending_action = 'stop'
+        self._auto_drying_pending_token = None
+        self._auto_drying_stop_required = True
 
         def callback(self, response):
-            self._auto_drying_pending_action = None
+            self._clear_auto_drying_pending()
             if response.get('code', 0) != 0:
+                self._auto_drying_retry_count += 1
                 self._record_auto_drying_failure(
                     self.reactor.monotonic(),
                     '停止失败：%s' % response.get('msg', '未知错误'))
                 return
+            self._auto_drying_retry_count = 0
+            self._auto_drying_next_retry = 0.
             self.auto_drying_active = False
             self.auto_drying_owned_by_auto = False
+            self._auto_drying_stop_required = False
+            self.auto_drying_last_error = ''
+            dryer = self._info.setdefault('dryer', {})
+            dryer['status'] = 'stop'
+            dryer['remain_time'] = 0
             if (restart_temperature > 0 and self._auto_drying_job_active
                     and self.auto_drying_enabled
                     and not self.auto_drying_suppressed_for_job):
@@ -916,13 +980,16 @@ class BunnyAce:
                     restart_temperature, self.reactor.monotonic())
 
         try:
-            self.send_request(
+            token = self.send_request(
                 request={'method': 'drying_stop'},
                 callback=callback,
                 operation='自动烘干停止')
+            if self._auto_drying_pending_action == 'stop':
+                self._auto_drying_pending_token = token
             return True
         except Exception as exc:
-            self._auto_drying_pending_action = None
+            self._clear_auto_drying_pending()
+            self._auto_drying_retry_count += 1
             self._record_auto_drying_failure(
                 eventtime, '停止失败：%s' % exc)
             return False
@@ -933,8 +1000,10 @@ class BunnyAce:
         self.auto_drying_suppressed_for_job = False
         self._auto_drying_temperature_ceiling = 0
         self._auto_drying_notices_seen.clear()
-        self._auto_drying_retry_count = 0
-        self._auto_drying_next_retry = 0.
+        if (not self._auto_drying_stop_required
+                and self._auto_drying_pending_action is None):
+            self._auto_drying_retry_count = 0
+            self._auto_drying_next_retry = 0.
 
     def _auto_drying_monitor(self, eventtime):
         print_stats = self.printer.lookup_object('print_stats', None)
@@ -947,18 +1016,26 @@ class BunnyAce:
             except Exception as exc:
                 self.auto_drying_last_error = '无法读取打印状态：%s' % exc
         self.auto_drying_print_state = state
+        self._reconcile_auto_drying_pending(eventtime, state)
 
         recommended, reason = select_auto_drying_policy(
             self._auto_drying_slots())
+        if recommended > 0:
+            recommended = min(recommended, self.max_dryer_temperature)
         self.auto_drying_reason = reason
         if not self.auto_drying_owned_by_auto:
             self.auto_drying_temperature = recommended
 
         if state in ('complete', 'cancelled', 'error', 'standby'):
-            if (self._auto_drying_job_active
-                    and self.auto_drying_owned_by_auto):
-                self._queue_auto_drying_stop(eventtime)
+            if (self.auto_drying_owned_by_auto
+                    or self._auto_drying_pending_action == 'start'):
+                self._auto_drying_stop_required = True
             self._reset_auto_drying_job()
+            if (self._auto_drying_stop_required
+                    and self._auto_drying_pending_action is None
+                    and self._connected
+                    and self._auto_drying_can_retry(eventtime)):
+                self._queue_auto_drying_stop(eventtime)
             return eventtime + 1.0
 
         if state == 'printing':
@@ -976,25 +1053,35 @@ class BunnyAce:
 
         if not self._auto_drying_job_active:
             return eventtime + 1.0
-        if not self.auto_drying_enabled:
-            if self.auto_drying_owned_by_auto:
+        if self._auto_drying_stop_required:
+            if (self._auto_drying_pending_action is None
+                    and self._connected
+                    and self._auto_drying_can_retry(eventtime)):
                 self._queue_auto_drying_stop(eventtime)
+            return eventtime + 1.0
+        if not self.auto_drying_enabled:
+            if (self.auto_drying_owned_by_auto
+                    or self._auto_drying_pending_action == 'start'):
+                self._auto_drying_stop_required = True
             return eventtime + 1.0
         if self.auto_drying_suppressed_for_job:
             return eventtime + 1.0
         if reason == 'EMPTY':
             self._publish_auto_drying_notice(
                 reason, AUTO_DRYING_MESSAGES[reason])
+            if (self.auto_drying_owned_by_auto
+                    or self._auto_drying_pending_action == 'start'):
+                self._auto_drying_stop_required = True
+                if (self._auto_drying_pending_action is None
+                        and self._connected
+                        and self._auto_drying_can_retry(eventtime)):
+                    self._queue_auto_drying_stop(eventtime)
             return eventtime + 1.0
         if not self._connected:
-            if (self._auto_drying_retry_count < self._auto_drying_max_retries
-                    and eventtime >= self._auto_drying_next_retry):
-                self._auto_drying_retry_count += 1
-                self._record_auto_drying_failure(
-                    eventtime,
-                    'ACE 未连接，自动烘干将在连接恢复后重试（%d/%d）。' % (
-                        self._auto_drying_retry_count,
-                        self._auto_drying_max_retries))
+            self.auto_drying_last_error = (
+                'ACE 未连接，自动烘干将在连接恢复后重试。')
+            self._publish_auto_drying_notice(
+                'DISCONNECTED', self.auto_drying_last_error)
             return eventtime + 1.0
         if self._auto_drying_pending_action is not None:
             return eventtime + 1.0
@@ -1025,7 +1112,8 @@ class BunnyAce:
             target = min(
                 recommended,
                 self._auto_drying_temperature_ceiling or recommended)
-        self._queue_auto_drying_start(target, eventtime)
+        if self._auto_drying_can_retry(eventtime):
+            self._queue_auto_drying_start(target, eventtime)
         return eventtime + 1.0
 
     def _handle_ready(self):
@@ -1286,6 +1374,7 @@ class BunnyAce:
 
             self.auto_drying_active = False
             self.auto_drying_owned_by_auto = False
+            self._auto_drying_stop_required = False
             self.gcode.respond_info('ACE：已开始烘干')
 
         self.send_request(
@@ -1295,11 +1384,18 @@ class BunnyAce:
     cmd_ACE_STOP_DRYING_help = 'Stops ACE Pro dryer'
 
     def cmd_ACE_STOP_DRYING(self, gcmd):
-        if (self._auto_drying_job_active
-                and self.auto_drying_owned_by_auto):
-            self.auto_drying_suppressed_for_job = True
-            self.auto_drying_active = False
-            self.auto_drying_owned_by_auto = False
+        if (self.auto_drying_owned_by_auto
+                or self._auto_drying_pending_action == 'start'):
+            if self._auto_drying_job_active:
+                self.auto_drying_suppressed_for_job = True
+            self._auto_drying_stop_required = True
+            if (self._auto_drying_pending_action is None
+                    and self._connected
+                    and self._auto_drying_can_retry(
+                        self.reactor.monotonic())):
+                self._queue_auto_drying_stop(self.reactor.monotonic())
+            gcmd.respond_info('ACE：已请求停止自动烘干')
+            return
 
         def callback(self, response):
             if 'code' in response and response['code'] != 0:
@@ -1329,9 +1425,15 @@ class BunnyAce:
         self.variables['ace_auto_drying_enabled'] = False
         self.gcode.run_script_from_command(
             'SAVE_VARIABLE VARIABLE=ace_auto_drying_enabled VALUE=False')
-        if self.auto_drying_owned_by_auto:
+        if (self.auto_drying_owned_by_auto
+                or self._auto_drying_pending_action == 'start'):
             self.auto_drying_suppressed_for_job = True
-            self._queue_auto_drying_stop(self.reactor.monotonic())
+            self._auto_drying_stop_required = True
+            if (self._auto_drying_pending_action is None
+                    and self._connected
+                    and self._auto_drying_can_retry(
+                        self.reactor.monotonic())):
+                self._queue_auto_drying_stop(self.reactor.monotonic())
         gcmd.respond_info('ACE：自动跟随打印烘干已关闭，设置已保存')
 
     def _request_sync(self, request, operation, allow_reconnect=False,
@@ -1646,6 +1748,9 @@ class BunnyAce:
             return False
         return bool(sensor.runout_helper.filament_present)
 
+    def _sensor_confirmation_timeout(self):
+        return self.extruder_sensor_timeout
+
     def _feed_until_sensor(self, tool, sensor_name, total_length, speed,
                            failure_message):
         """Feed until a physical sensor confirms arrival using the configured mode."""
@@ -1708,44 +1813,55 @@ class BunnyAce:
     def _feed_continuously_until_sensor(self, tool, sensor_name,
                                         total_length, speed,
                                         failure_message):
-        """Use one main motion request while polling the arrival sensor."""
+        """Use one fast request and one slow approach request."""
         total_length = float(total_length)
-        self._set_toolchange_phase(
-            'ACE_FEED_CONTINUOUS',
-            feed_length=total_length,
-            feed_speed=speed,
-            compensation_used=0.)
-        result = self._feed(
-            tool, total_length, speed, stop_sensor=sensor_name)
-        if result.get('stopped_by_sensor') or self._sensor_present(sensor_name):
-            return total_length
-        if result.get('uncertain'):
-            raise FilamentFeedError(
-                'ACE：连续送料期间连接状态不确定，未重复发送物理动作')
+        approach_length = min(self.feed_approach_length, total_length)
+        fast_length = total_length - approach_length
+        fed = 0.
+        for length, segment_speed, phase in (
+                (fast_length, speed, 'ACE_FEED_FAST_CONTINUOUS'),
+                (approach_length, self.feed_approach_speed,
+                 'ACE_FEED_APPROACH_CONTINUOUS')):
+            if length <= 0 or self._sensor_present(sensor_name):
+                continue
+            self._set_toolchange_phase(
+                phase,
+                feed_length=fed + length,
+                feed_speed=segment_speed,
+                compensation_used=0.)
+            result = self._feed(
+                tool, length, segment_speed, stop_sensor=sensor_name)
+            fed += length
+            if (result.get('stopped_by_sensor')
+                    or self._sensor_present(sensor_name)):
+                return fed
+            if result.get('uncertain'):
+                raise FilamentFeedError(
+                    'ACE：连续送料期间连接状态不确定，未重复发送物理动作')
+            self.wait_ace_ready()
 
-        self.wait_ace_ready()
         compensation = float(self.feed_slip_compensation_length)
         if compensation <= 0:
-            raise FilamentFeedError(failure_message % total_length)
+            raise FilamentFeedError(failure_message % fed)
 
         self.gcode.respond_info(
             'ACE：连续送料 %.1f mm 后上方传感器仍未触发，'
-            '开始一次有限低速补偿送料' % total_length)
+            '开始一次有限低速补偿送料' % fed)
         self._set_toolchange_phase(
             'ACE_FEED_SLIP_COMPENSATION_CONTINUOUS',
-            feed_length=total_length + compensation,
+            feed_length=fed + compensation,
             feed_speed=self.feed_slip_compensation_speed,
             compensation_used=compensation)
         result = self._feed(
             tool, compensation, self.feed_slip_compensation_speed,
             stop_sensor=sensor_name)
         if result.get('stopped_by_sensor') or self._sensor_present(sensor_name):
-            return total_length + compensation
+            return fed + compensation
         if result.get('uncertain'):
             raise FilamentFeedError(
                 'ACE：低速补偿送料期间连接状态不确定，未重复发送物理动作')
         self.wait_ace_ready()
-        message = failure_message % (total_length + compensation)
+        message = failure_message % (fed + compensation)
         raise FilamentFeedError(
             '%s；一次连续低速补偿送料 %.1f mm 后仍未触发，'
             '可能存在打滑或堵料' % (message, compensation))
@@ -2467,23 +2583,6 @@ class BunnyAce:
                 logging.exception('ACE: Failed to disable feed assist on abort')
         gcmd.respond_info(
             'ACE：换料恢复状态已清除；再次换料前请检查上下传感器')
-
-    def _on_toolhead_move(self, event):
-        """Event handler for toolhead move, used for monitoring extruder movement"""
-        if not self.endless_spool_enabled or self._park_in_progress or self.endless_spool_in_progress:
-            return
-
-        # Check for runout during any move
-        self._endless_spool_runout_handler()
-        
-        # If runout is detected, track extruder distance
-        if hasattr(event, 'newpos') and hasattr(event, 'oldpos'):
-            newpos = event.newpos
-            oldpos = event.oldpos
-            if len(newpos) > 3 and len(oldpos) > 3:
-                e_move = newpos[3] - oldpos[3]
-                if e_move > 0 and self.endless_spool_runout_detected:
-                    self._endless_spool_check_distance(e_move)
 
     cmd_ACE_CHANGE_SPOOL_help = 'Change spool for a specific index - INDEX= (retracts filament from tube, unloads if loaded first)'
 

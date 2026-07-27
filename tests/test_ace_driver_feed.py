@@ -34,13 +34,14 @@ class FakeGcode:
 def make_ace(intermittent):
     ace = object.__new__(ace_driver.BunnyAce)
     ace.intermittent_feed = intermittent
-    ace.feed_approach_length = 200.0
+    ace.feed_approach_length = 100.0
     ace.feed_fast_chunk_length = 1000.0
     ace.feed_approach_speed = 25.0
     ace.feed_slip_compensation_length = 400.0
     ace.feed_slip_compensation_chunk = 50.0
     ace.feed_slip_compensation_speed = 25.0
     ace.ace_motion_chunk_length = 100.0
+    ace.extruder_sensor_timeout = 15.0
     ace.gcode = FakeGcode()
     ace._sensor_present = lambda _name: False
     ace._set_toolchange_phase = lambda *_args, **_kwargs: None
@@ -103,13 +104,15 @@ class AceContinuousFeedTests(unittest.TestCase):
         self.assertEqual(fed, 0.0)
         self.assertEqual(calls, [])
 
-    def test_continuous_mode_uses_one_main_request(self):
+    def test_continuous_mode_uses_fast_and_approach_requests(self):
         ace = make_ace(intermittent=False)
         calls = []
+        sensor_states = iter([False, False, False, False, True])
+        ace._sensor_present = lambda _name: next(sensor_states)
 
         def feed(index, length, speed, stop_sensor=None):
             calls.append((index, length, speed, stop_sensor))
-            return {"stopped_by_sensor": True}
+            return {}
 
         ace._feed = feed
         ace._feed_until_sensor(
@@ -117,12 +120,25 @@ class AceContinuousFeedTests(unittest.TestCase):
             "送料 %.1f mm 后未触发")
 
         self.assertEqual(
-            calls, [(0, 1200.0, 160, "extruder_sensor")])
+            calls,
+            [
+                (0, 1100.0, 160, "extruder_sensor"),
+                (0, 100.0, 25.0, "extruder_sensor"),
+            ],
+        )
+
+    def test_sensor_confirmation_timeout_uses_configured_value(self):
+        ace = make_ace(intermittent=False)
+        ace.extruder_sensor_timeout = 17.0
+
+        self.assertEqual(ace._sensor_confirmation_timeout(), 17.0)
 
     def test_continuous_mode_uses_one_compensation_request(self):
         ace = make_ace(intermittent=False)
         calls = []
-        results = [{}, {"stopped_by_sensor": True}]
+        sensor_states = iter([False, False, False, False, False, True])
+        ace._sensor_present = lambda _name: next(sensor_states)
+        results = [{}, {}, {"stopped_by_sensor": True}]
 
         def feed(index, length, speed, stop_sensor=None):
             calls.append((index, length, speed, stop_sensor))
@@ -136,7 +152,8 @@ class AceContinuousFeedTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                (1, 1200.0, 160, "extruder_sensor"),
+                (1, 1100.0, 160, "extruder_sensor"),
+                (1, 100.0, 25.0, "extruder_sensor"),
                 (1, 400.0, 25.0, "extruder_sensor"),
             ],
         )

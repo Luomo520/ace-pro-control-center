@@ -4,6 +4,8 @@
 
 本项目不是新的打印机网页，也不会用独立站点替代 Fluidd。安装后，ACE Pro 会出现在 Fluidd 导航和仪表盘中；`/ace.html` 仅作为备用的独立控制入口。
 
+本项目不兼容 `Kobra-S1/ACEPRO`，不得与该驱动同时加载。
+
 > [!IMPORTANT]
 > 本项目只适配基于 `szkrisz/ACEPROSV08` 的单台 ACE Pro、四料槽方案，不兼容同时加载 `Kobra-S1/ACEPRO` 驱动。安装前必须停止打印，并确认切刀坐标、传感器名称和耗材路径长度适合自己的机器。
 
@@ -31,7 +33,18 @@
 
 详细第三方来源和修改边界见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## v1.0.0 特色功能
+## v1.1.0 特色功能
+
+- 自动跟随打印：打印开始自动烘干，打印完成、取消或错误后停止自动拥有的烘干任务；暂停打印时保持运行。
+- 全部 PLA：45°C。
+- PLA 与其他材料混装：50°C，保护 PLA，并提示其他材料的烘干效果可能受限。
+- 未知材料：45°C，并提示烘干效果可能受限。
+- 高温材料：60°C，包括 ABS、ABSCF、PETG、PAHTCF、PETCF 和 PEEK，实际温度不会超过 `max_dryer_temperature`。
+- 手动启动的烘干不会被自动停止，也不会被自动功能接管。
+- USB 断联或命令失败不会暂停打印；请求按 30 秒退避并最多重试三次，打印结束后的待停止任务会在重连后继续处理。
+- 完整流程见 [自动跟随打印烘干流程](docs/AUTO_DRYING_FLOW.zh-CN.md)，驱动边界和验证说明见 [驱动 v1.1.0 更新说明](docs/DRIVER-v1.1.0.zh-CN.md)。
+
+## v1.0.0 基础功能
 
 - Fluidd 原生集成：ACE Pro 作为 Fluidd 卡片和导航页面运行，不需要打开另一套管理网站。
 - 四料槽管理：显示并编辑槽位颜色、材料和温度，支持装载、卸载、清空、换卷和库存保存。
@@ -58,7 +71,7 @@
 | Fluidd | 已完整测试 `v1.37.2` |
 | 其他 Fluidd 版本 | 安装器会显示升级或降级风险，由用户决定继续或取消 |
 | Kobra-S1/ACEPRO | 不可与本驱动同时加载 |
-| 多台 ACE Pro | v1.0.0 不支持 |
+| 多台 ACE Pro | v1.1.0 不支持 |
 
 安装卡片时会部署基于 Fluidd `v1.37.2` 构建的完整前端。当前 Fluidd 低于、高于或无法识别该版本时，安装器都会先提示风险，并保留回滚文件。
 
@@ -162,7 +175,7 @@ ace_stop_ready_timeout: 25
 - `intermittent_retract: False`：长距离回抽只保留快速段和慢速停放段。
 - `ace_stop_ready_timeout`：停止送料后的最短等待时间；驱动还会按“距离/速度 + 3 秒”动态延长。
 
-全部速度、距离和恢复参数见 [驱动 v1.0.0 更新与调校](docs/DRIVER-v1.0.0.zh-CN.md)。
+全部速度、距离和恢复参数见 [驱动 v1.0.0 更新与调校](docs/DRIVER-v1.0.0.zh-CN.md)，自动烘干状态机见 [驱动 v1.1.0 更新说明](docs/DRIVER-v1.1.0.zh-CN.md)。
 
 ## 安装后验证
 
@@ -246,6 +259,8 @@ sh ui-installer.sh --uninstall-card
 
 - [安装、升级与恢复教程](docs/INSTALL.zh-CN.md)
 - [驱动参数与换料调校](docs/DRIVER-v1.0.0.zh-CN.md)
+- [自动烘干流程](docs/AUTO_DRYING_FLOW.zh-CN.md)
+- [驱动 v1.1.0 更新说明](docs/DRIVER-v1.1.0.zh-CN.md)
 - [更新日志](CHANGELOG.md)
 - [第三方来源声明](THIRD_PARTY_NOTICES.md)
 - [GPL-3.0 许可证](LICENSE)

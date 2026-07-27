@@ -24,3 +24,20 @@ test('standalone client sends only strict switch commands', async () => {
   assert.match(source, /PLA 与其他材料混装/)
   assert.match(source, /未知材料，将以 45°C/)
 })
+
+
+test('Fluidd keeps transient ACE API startup failures in a loading state', async () => {
+  const mixin = await readFile(
+    'fluidd-source-overlay/src/mixins/acePro.ts',
+    'utf8'
+  )
+  const card = await readFile(
+    'fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue',
+    'utf8'
+  )
+
+  assert.match(mixin, /error\?\.response\?\.status === 404/)
+  assert.match(mixin, /get aceProApiLoading \(\): boolean/)
+  assert.match(card, /v-if="aceProApiLoading"/)
+  assert.match(card, /正在读取 ACE Pro 状态/)
+})

@@ -5,6 +5,7 @@ import {
   autoDryingWarningMessage,
   buildAceSetSlotGcode,
   resolveAceProApiState,
+  shouldResetAceNoticeSequence,
   shouldShowAceNotice,
 } from './acepro'
 
@@ -90,5 +91,11 @@ describe('ACEPROSV08 Fluidd adapter', () => {
     expect(shouldShowAceNotice(4, 4)).toBe(false)
     expect(shouldShowAceNotice(5, 4)).toBe(true)
     expect(shouldShowAceNotice(1, 5)).toBe(false)
+  })
+
+  it('resets the notice baseline after a driver restart', () => {
+    expect(shouldResetAceNoticeSequence(0, 7)).toBe(true)
+    expect(shouldResetAceNoticeSequence(7, 7)).toBe(false)
+    expect(shouldResetAceNoticeSequence(8, 7)).toBe(false)
   })
 })

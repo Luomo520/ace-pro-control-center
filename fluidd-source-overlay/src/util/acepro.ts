@@ -186,6 +186,10 @@ export function shouldShowAceNotice (incoming: number, seen: number): boolean {
   return incoming > 0 && incoming > seen
 }
 
+export function shouldResetAceNoticeSequence (incoming: number, seen: number): boolean {
+  return incoming >= 0 && incoming < seen
+}
+
 export function detectAceProObjectKey (printerState: PrinterState): string | undefined {
   return Object.keys(printerState).find((key) => {
     if (!/^ace(?:\s|$)/i.test(key)) return false

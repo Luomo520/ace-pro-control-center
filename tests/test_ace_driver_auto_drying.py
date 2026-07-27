@@ -114,6 +114,7 @@ def make_auto_ace(enabled=True, materials=None, dryer_status="stop", connected=T
         ],
     }
     ace._connected = connected
+    ace.max_dryer_temperature = 65
     ace.auto_drying_enabled = enabled
     ace.auto_drying_active = False
     ace.auto_drying_owned_by_auto = False
@@ -127,6 +128,8 @@ def make_auto_ace(enabled=True, materials=None, dryer_status="stop", connected=T
     ace._auto_drying_job_active = False
     ace._auto_drying_print_samples = 0
     ace._auto_drying_pending_action = None
+    ace._auto_drying_pending_token = None
+    ace._auto_drying_stop_required = False
     ace._auto_drying_temperature_ceiling = 0
     ace._auto_drying_notices_seen = set()
     ace._auto_drying_retry_count = 0
@@ -148,6 +151,9 @@ def make_auto_ace(enabled=True, materials=None, dryer_status="stop", connected=T
         ace.transport.append(("stop",))
         ace.auto_drying_active = False
         ace.auto_drying_owned_by_auto = False
+        ace._auto_drying_stop_required = False
+        ace._auto_drying_retry_count = 0
+        ace._auto_drying_next_retry = 0.0
         ace._info["dryer"]["status"] = "stop"
         if restart_temperature:
             start(restart_temperature, _eventtime)
@@ -276,6 +282,15 @@ class AutoDryingLifecycleTests(unittest.TestCase):
         self.assertEqual(ace.transport, [])
         self.assertEqual(ace.auto_drying_notice_id, 1)
 
+    def test_empty_inventory_stops_owned_drying(self):
+        ace = running_auto_ace(temperature=60, materials=["ABS"])
+        ace.inventory[0].update(status="empty", material="")
+
+        tick(ace, "printing")
+
+        self.assertEqual(ace.transport, [("stop",)])
+        self.assertFalse(ace.auto_drying_owned_by_auto)
+
     def test_natural_expiry_renews_during_long_print(self):
         ace = running_auto_ace(temperature=60, materials=["ABS"])
         ace._info["dryer"]["status"] = "stop"
@@ -292,7 +307,8 @@ class AutoDryingLifecycleTests(unittest.TestCase):
         tick(ace, "printing", 62)
         tick(ace, "printing", 92)
         tick(ace, "printing", 122)
-        self.assertEqual(ace._auto_drying_retry_count, 3)
+        self.assertEqual(ace._auto_drying_retry_count, 0)
+        self.assertEqual(ace.auto_drying_notice_id, 1)
         self.assertEqual(ace.print_stats.state, "printing")
         self.assertIn("未连接", ace.auto_drying_last_error)
 
@@ -310,6 +326,203 @@ class AutoDryingLifecycleTests(unittest.TestCase):
             "SAVE_VARIABLE VARIABLE=ace_auto_drying_enabled VALUE=False",
             ace.gcode.scripts,
         )
+
+    def test_connected_start_failures_respect_backoff_and_retry_limit(self):
+        ace = make_auto_ace(enabled=True, materials=["ABS"])
+        ace.max_dryer_temperature = 65
+        attempts = []
+
+        def fail_immediately(**kwargs):
+            attempts.append(kwargs["request"]["method"])
+            kwargs["callback"](ace, {"code": 1, "msg": "simulated failure"})
+            return {"done": True, "lost": False}
+
+        ace.send_request = fail_immediately
+        ace._queue_auto_drying_start = (
+            ace_driver.BunnyAce._queue_auto_drying_start.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+
+        for eventtime in (1, 2, 3, 31, 32, 61, 62, 91, 92, 122):
+            tick(ace, "printing", eventtime)
+
+        self.assertEqual(attempts, ["drying", "drying", "drying"])
+        self.assertEqual(ace._auto_drying_retry_count, 3)
+
+    def test_late_start_success_after_terminal_state_is_stopped(self):
+        ace = make_auto_ace(enabled=True, materials=["ABS"])
+        ace.max_dryer_temperature = 65
+        requests = []
+
+        def capture(**kwargs):
+            token = {"done": False, "lost": False, "sent": True}
+            requests.append((kwargs, token))
+            return token
+
+        ace.send_request = capture
+        ace._queue_auto_drying_start = (
+            ace_driver.BunnyAce._queue_auto_drying_start.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+        ace._queue_auto_drying_stop = (
+            ace_driver.BunnyAce._queue_auto_drying_stop.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+
+        tick(ace, "printing", 1)
+        tick(ace, "printing", 2)
+        tick(ace, "complete", 3)
+        requests[0][0]["callback"](ace, {"code": 0, "msg": "success"})
+
+        self.assertEqual(
+            [item[0]["request"]["method"] for item in requests],
+            ["drying", "drying_stop"],
+        )
+        requests[1][0]["callback"](ace, {"code": 0, "msg": "success"})
+        self.assertFalse(ace.auto_drying_owned_by_auto)
+        self.assertFalse(ace.auto_drying_active)
+
+    def test_start_success_does_not_repeat_before_status_refresh(self):
+        ace = make_auto_ace(enabled=True, materials=["ABS"])
+        requests = []
+
+        def capture(**kwargs):
+            token = {"done": False, "lost": False, "sent": True}
+            requests.append((kwargs, token))
+            return token
+
+        ace.send_request = capture
+        ace._queue_auto_drying_start = (
+            ace_driver.BunnyAce._queue_auto_drying_start.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+
+        tick(ace, "printing", 1)
+        tick(ace, "printing", 2)
+        requests[0][0]["callback"](ace, {"code": 0, "msg": "success"})
+        tick(ace, "printing", 3)
+
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(ace._info["dryer"]["status"], "drying")
+
+    def test_lost_pending_start_is_reconciled_after_reconnect(self):
+        ace = make_auto_ace(enabled=True, materials=["ABS"])
+        ace.max_dryer_temperature = 65
+        requests = []
+
+        def capture(**kwargs):
+            token = {
+                "done": False,
+                "lost": False,
+                "sent": True,
+                "reason": None,
+            }
+            requests.append((kwargs, token))
+            return token
+
+        ace.send_request = capture
+        ace._queue_auto_drying_start = (
+            ace_driver.BunnyAce._queue_auto_drying_start.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+
+        tick(ace, "printing", 1)
+        tick(ace, "printing", 2)
+        requests[0][1].update(
+            done=True, lost=True, reason="USB disconnect"
+        )
+        ace._connected = False
+        tick(ace, "printing", 3)
+        ace._connected = True
+        tick(ace, "printing", 33)
+
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(ace._auto_drying_pending_action, "start")
+        self.assertIs(ace._auto_drying_pending_token, requests[1][1])
+
+    def test_failed_manual_stop_preserves_ownership_and_retries(self):
+        ace = running_auto_ace(temperature=60, materials=["ABS"])
+        ace.max_dryer_temperature = 65
+        requests = []
+
+        def capture(**kwargs):
+            token = {"done": False, "lost": False, "sent": True}
+            requests.append((kwargs, token))
+            return token
+
+        ace.send_request = capture
+        ace._queue_auto_drying_stop = (
+            ace_driver.BunnyAce._queue_auto_drying_stop.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+        ace.cmd_ACE_STOP_DRYING(FakeCommand())
+        requests[0][0]["callback"](
+            ace, {"code": 1, "msg": "simulated stop failure"}
+        )
+
+        self.assertTrue(ace.auto_drying_owned_by_auto)
+        self.assertTrue(ace.auto_drying_active)
+        self.assertTrue(ace.auto_drying_suppressed_for_job)
+        self.assertTrue(ace._auto_drying_stop_required)
+
+        tick(ace, "printing", 29)
+        self.assertEqual(len(requests), 1)
+        tick(ace, "printing", 30)
+        self.assertEqual(len(requests), 2)
+
+    def test_terminal_disconnect_retries_stop_after_reconnect(self):
+        ace = running_auto_ace(temperature=60, materials=["ABS"])
+        ace.max_dryer_temperature = 65
+        requests = []
+
+        def capture(**kwargs):
+            token = {"done": False, "lost": False, "sent": True}
+            requests.append((kwargs, token))
+            return token
+
+        ace.send_request = capture
+        ace._queue_auto_drying_stop = (
+            ace_driver.BunnyAce._queue_auto_drying_stop.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+        ace._connected = False
+        tick(ace, "complete", 1)
+        self.assertTrue(ace._auto_drying_stop_required)
+        self.assertEqual(requests, [])
+
+        ace._connected = True
+        tick(ace, "complete", 31)
+        self.assertEqual(requests[0][0]["request"]["method"], "drying_stop")
+        requests[0][0]["callback"](ace, {"code": 0, "msg": "success"})
+        self.assertFalse(ace._auto_drying_stop_required)
+        self.assertFalse(ace.auto_drying_owned_by_auto)
+
+    def test_auto_temperature_respects_configured_maximum(self):
+        ace = make_auto_ace(enabled=True, materials=["ABS"])
+        ace.max_dryer_temperature = 55
+        requests = []
+
+        def capture(**kwargs):
+            requests.append(kwargs)
+            return {"done": False, "lost": False, "sent": False}
+
+        ace.send_request = capture
+        ace._queue_auto_drying_start = (
+            ace_driver.BunnyAce._queue_auto_drying_start.__get__(
+                ace, ace_driver.BunnyAce
+            )
+        )
+        tick(ace, "printing", 1)
+        tick(ace, "printing", 2)
+
+        self.assertEqual(requests[0]["request"]["params"]["temp"], 55)
 
 
 if __name__ == "__main__":

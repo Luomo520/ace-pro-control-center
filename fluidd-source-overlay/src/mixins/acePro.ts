@@ -14,6 +14,7 @@ import {
   resolveAceProState,
   rgbToCss,
   rgbToHex,
+  shouldResetAceNoticeSequence,
   shouldShowAceNotice,
 } from '@/util/acepro'
 
@@ -67,6 +68,12 @@ export default class AceProMixin extends StateMixin {
 
   get aceProSupportsUi (): boolean {
     return this.aceProApiAvailable === true || this.aceProDetected || hasAceProConfig(this.aceProPrinterState)
+  }
+
+  get aceProApiLoading (): boolean {
+    return this.aceProApiAvailable == null &&
+      !this.aceProDetected &&
+      !hasAceProConfig(this.aceProPrinterState)
   }
 
   get aceProStatus (): string {
@@ -173,15 +180,21 @@ export default class AceProMixin extends StateMixin {
       this.aceProApiStatus = status
       this.aceProApiAvailable = true
       await this.handleAceProAutoDryingNotice(resolved)
-    } catch {
-      this.aceProApiAvailable = false
-      this.aceProApiStatus = null
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        this.aceProApiAvailable = false
+        this.aceProApiStatus = null
+      }
     }
   }
 
   private async handleAceProAutoDryingNotice (state: AceProResolvedState) {
     const notice = state.autoDrying
     if (this.aceProLastNoticeId == null) {
+      this.aceProLastNoticeId = notice.noticeId
+      return
+    }
+    if (shouldResetAceNoticeSequence(notice.noticeId, this.aceProLastNoticeId)) {
       this.aceProLastNoticeId = notice.noticeId
       return
     }
