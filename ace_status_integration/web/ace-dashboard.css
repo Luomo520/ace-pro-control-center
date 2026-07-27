@@ -22,6 +22,7 @@ body {
 .card-row {
     display: grid;
     grid-template-columns: 1.2fr 1fr;
+    align-items: start;
     gap: 16px;
     margin-bottom: 16px;
 }
@@ -861,13 +862,15 @@ body {
     gap: 8px;
     min-height: 38px;
     padding: 7px 9px;
-    border: 1px solid #e5e7eb;
+    border: 1px solid #232a33;
     border-radius: 6px;
-    background: #f8fafc;
+    background: #151921;
+    color: #9ba4b1;
     font-size: 13px;
 }
 
 .calibration-status-item strong {
+    color: #e6e9ed;
     text-align: right;
 }
 
@@ -882,16 +885,17 @@ body {
 .calibration-slot-select {
     display: grid;
     gap: 4px;
-    color: #4b5563;
+    color: #9ba4b1;
     font-size: 12px;
 }
 
 .calibration-slot-select select {
     min-height: 36px;
     padding: 6px 8px;
-    border: 1px solid #d1d5db;
+    border: 1px solid #2c323c;
     border-radius: 6px;
-    background: white;
+    background: #0f1216;
+    color: #e6e9ed;
 }
 
 .calibration-error {

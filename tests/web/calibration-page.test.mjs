@@ -65,3 +65,16 @@ test('standalone movement methods require a fresh browser confirmation', async (
     assert.match(block[1], /window\.confirm/)
   }
 })
+
+
+test('standalone status and calibration panels remain compact in the dark theme', async () => {
+  const [html, css] = await Promise.all([
+    readFile('ace_status_integration/web/ace.html', 'utf8'),
+    readFile('ace_status_integration/web/ace-dashboard.css', 'utf8'),
+  ])
+
+  assert.doesNotMatch(html, /class="info-col"/)
+  assert.match(css, /\.card-row\s*\{[^}]*align-items:\s*start/s)
+  assert.match(css, /\.calibration-status-item\s*\{[^}]*background:\s*#151921/s)
+  assert.match(css, /\.calibration-slot-select select\s*\{[^}]*background:\s*#0f1216/s)
+})

@@ -37,46 +37,42 @@
                 <div class="card device-status-card compact">
                     <h2>{{ t('cards.deviceStatus') }}</h2>
                     <div class="device-info two-col">
-                        <div class="info-col">
-                            <div class="info-row">
-                                <span class="label">{{ t('deviceInfo.model') }}:</span>
-                                <span class="value">{{ deviceStatus.model || t('common.unknown') }}</span>
-                            </div>
+                        <div class="info-row">
+                            <span class="label">{{ t('deviceInfo.model') }}:</span>
+                            <span class="value">{{ deviceStatus.model || t('common.unknown') }}</span>
                         </div>
-                        <div class="info-col">
-                            <div class="info-row">
-                                <span class="label">{{ t('deviceInfo.status') }}:</span>
-                                <span class="value status-badge" :class="deviceStatus.status">
-                                    {{ getStatusText(deviceStatus.status) }}
-                                </span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">{{ t('deviceInfo.temp') }}:</span>
-                                <span class="value">{{ deviceStatus.temp || 0 }}°C</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">湿度：</span>
-                                <span class="value" v-if="deviceStatus.humidity !== null" :style="deviceStatus.humidity > 40 ? 'color: #ff4444; font-weight: bold;' : ''">
-                                    {{ deviceStatus.humidity }}% RH
-                                </span>
-                                <span class="value" v-else style="color: #888;">--</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">上方传感器：</span>
-                                <span class="sensor-switch" :class="sensorClass(sensors.upper)">{{ sensorText(sensors.upper) }}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">下方传感器：</span>
-                                <span class="sensor-switch" :class="sensorClass(sensors.lower)">{{ sensorText(sensors.lower) }}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">自动烘干：</span>
-                                <span class="value">{{ autoDryingStatusText() }}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">{{ t('deviceInfo.rfid') }}:</span>
-                                <span class="value">{{ deviceStatus.enable_rfid ? t('deviceInfo.rfidOn') : t('deviceInfo.rfidOff') }}</span>
-                            </div>
+                        <div class="info-row">
+                            <span class="label">{{ t('deviceInfo.status') }}:</span>
+                            <span class="value status-badge" :class="deviceStatus.status">
+                                {{ getStatusText(deviceStatus.status) }}
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">{{ t('deviceInfo.temp') }}:</span>
+                            <span class="value">{{ deviceStatus.temp || 0 }}°C</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">湿度：</span>
+                            <span class="value" v-if="deviceStatus.humidity !== null" :style="deviceStatus.humidity > 40 ? 'color: #ff4444; font-weight: bold;' : ''">
+                                {{ deviceStatus.humidity }}% RH
+                            </span>
+                            <span class="value" v-else style="color: #888;">--</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">上方传感器：</span>
+                            <span class="sensor-switch" :class="sensorClass(sensors.upper)">{{ sensorText(sensors.upper) }}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">下方传感器：</span>
+                            <span class="sensor-switch" :class="sensorClass(sensors.lower)">{{ sensorText(sensors.lower) }}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">自动烘干：</span>
+                            <span class="value">{{ autoDryingStatusText() }}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">{{ t('deviceInfo.rfid') }}:</span>
+                            <span class="value">{{ deviceStatus.enable_rfid ? t('deviceInfo.rfidOn') : t('deviceInfo.rfidOff') }}</span>
                         </div>
                     </div>
                 </div>
