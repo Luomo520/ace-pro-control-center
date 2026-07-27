@@ -70,11 +70,12 @@ class FakeReactor:
 class FakePrinter:
     def __init__(self, print_state="standby"):
         self.print_stats = FakePrintStats(print_state)
+        self.objects = {}
 
     def lookup_object(self, name, default=None):
         if name == "print_stats":
             return self.print_stats
-        return default
+        return self.objects.get(name, default)
 
     def command_error(self, message):
         return RuntimeError(message)
@@ -219,6 +220,91 @@ def make_preload_ace(confirm=1, print_state="standby", upper=False,
         "ace_current_index", index)
     gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": confirm})
     return ace, gcmd
+
+
+class FakeRunoutHelper:
+    def __init__(self, present=False):
+        self.filament_present = present
+
+
+class FakeFilamentSensor:
+    def __init__(self, present=False):
+        self.runout_helper = FakeRunoutHelper(present)
+
+
+class FakeGcodeMove:
+    def __init__(self):
+        self.reset_count = 0
+
+    def reset_last_position(self):
+        self.reset_count += 1
+
+
+def make_same_tool_ace(position="toolhead", upper=True, lower=True):
+    ace, _gcmd = make_preload_ace(
+        upper=upper, lower=lower, position=position, current_index=0)
+    ace.printer.objects["filament_switch_sensor extruder_sensor"] = (
+        FakeFilamentSensor(upper))
+    ace.printer.objects["gcode_move"] = FakeGcodeMove()
+    ace._check_endstop_state = lambda name: (
+        ace._preload_lower if name == "toolhead_sensor"
+        else ace._preload_upper)
+    ace._pending_toolchange_recovery = None
+    ace._pending_feed_assist_restore = -1
+    ace._toolchange_context = None
+    ace._toolchange_last_error = None
+    ace._park_in_progress = False
+    ace.endless_spool_enabled = False
+    ace.endless_spool_runout_detected = False
+    ace._complete_toolchange_recovery = lambda: None
+    ace._cancel_toolchange_recovery = lambda: None
+    ace._extruder_move = lambda length, speed: ace.motion_calls.append(
+        ("heated_extruder", float(length), float(speed)))
+    ace.toolhead_to_nozzle_speed = 5.0
+    return ace, FakeGcmd({"TOOL": 0})
+
+
+def make_cross_tool_ace():
+    ace, _gcmd = make_same_tool_ace(
+        position="nozzle", upper=True, lower=True)
+    ace.slot_positions[1] = "preload_parked_estimated"
+    ace.calibration_record = make_calibration_record(
+        feed_completed=15.0,
+        feed_upper_bound=20.0,
+        bowden_tube_length=10.0,
+        parking_margin=2.0,
+        parking_distance=12.0)
+    ace.retract_calls = []
+    upper_sensor = ace.printer.objects[
+        "filament_switch_sensor extruder_sensor"]
+
+    def extruder_move(length, speed):
+        ace.motion_calls.append(
+            ("heated_extruder", float(length), float(speed)))
+        if length < 0:
+            upper_sensor.runout_helper.filament_present = False
+            ace._preload_upper = False
+            ace._preload_lower = False
+
+    def retract(index, length, speed):
+        ace.retract_calls.append(
+            ("retract", index, float(length), float(speed)))
+        return {}
+
+    def retract_in_chunks(index, length, speed, phase):
+        ace.retract_calls.append(
+            ("park", index, float(length), float(speed), phase))
+
+    def park_to_toolhead(index, _gcmd, _endless):
+        ace.motion_calls.append(("load_target", index))
+        ace._set_slot_position(index, "nozzle", persist=False)
+        ace.variables["ace_filament_pos"] = "nozzle"
+
+    ace._extruder_move = extruder_move
+    ace._retract = retract
+    ace._retract_in_chunks = retract_in_chunks
+    ace._park_to_toolhead = park_to_toolhead
+    return ace, FakeGcmd({"TOOL": 1})
 
 
 def make_calibration_record(**overrides):
@@ -551,6 +637,59 @@ class AcePreloadTests(unittest.TestCase):
             ace.cmd_ACE_PRELOAD(gcmd)
 
         self.assertEqual(ace.slot_positions[1], "unknown")
+        self.assertEqual(
+            ace.slot_positions[0], "preload_parked_estimated")
+
+
+class AceToolchangePositionTests(unittest.TestCase):
+    def test_toolchange_rejects_another_motion_owner_before_macros(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace._motion_owner = "距离标定"
+
+        with self.assertRaises(RuntimeError):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertFalse(any("_ACE_PRE_TOOLCHANGE" in item
+                             for item in ace.gcode.scripts))
+
+    def test_same_tool_at_toolhead_completes_heated_nozzle_load(self):
+        ace, gcmd = make_same_tool_ace(position="toolhead")
+
+        ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        scripts = ace.gcode.scripts
+        self.assertTrue(any("_ACE_PRE_TOOLCHANGE" in item
+                            for item in scripts))
+        self.assertTrue(any("_ACE_POST_TOOLCHANGE" in item
+                            for item in scripts))
+        self.assertFalse(any("CUT_TIP" in item for item in scripts))
+        self.assertIn(
+            ("heated_extruder", 80.0, 5.0), ace.motion_calls)
+        self.assertEqual(ace.slot_positions[0], "nozzle")
+
+    def test_old_tool_parks_and_new_tool_loads_from_estimated_position(self):
+        ace, gcmd = make_cross_tool_ace()
+
+        ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        parking_call = next(call for call in ace.retract_calls
+                            if call[0] == "park")
+        self.assertEqual(parking_call[1:3], (0, 12.0))
+        self.assertEqual(
+            ace.slot_positions[0], "preload_parked_estimated")
+        self.assertEqual(ace.slot_positions[1], "nozzle")
+        self.assertTrue(any("CUT_TIP" in item
+                            for item in ace.gcode.scripts))
+
+    def test_toolhead_position_unloads_without_running_cutter(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace.slot_positions[0] = "toolhead"
+        ace.variables["ace_filament_pos"] = "toolhead"
+
+        ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertFalse(any("CUT_TIP" in item
+                             for item in ace.gcode.scripts))
         self.assertEqual(
             ace.slot_positions[0], "preload_parked_estimated")
 

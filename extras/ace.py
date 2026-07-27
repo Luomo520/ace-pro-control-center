@@ -765,6 +765,17 @@ class BunnyAce:
             return float(self.calibration_record['parking_distance'])
         return float(self.toolchange_load_length)
 
+    def _parking_retract_profile(self):
+        valid = calibration_is_valid(
+            self.calibration_record,
+            self.bowden_tube_length,
+            self.five_way_parking_margin)
+        if valid:
+            return (
+                float(self.calibration_record['parking_distance']),
+                'preload_parked_estimated')
+        return float(self.toolchange_retract_length), 'internal_or_unknown'
+
     def _require_preload_preflight(self, index):
         state = self._print_state()
         if state in ('printing', 'paused'):
@@ -820,18 +831,12 @@ class BunnyAce:
                     -step, self.toolhead_feed_slow_speed)
                 cold_retracted += step
 
-            valid_calibration = calibration_is_valid(
-                self.calibration_record,
-                self.bowden_tube_length,
-                self.five_way_parking_margin)
+            retract_distance, parked_position = (
+                self._parking_retract_profile())
             if self._sensor_present('extruder_sensor'):
                 if self._feed_assist_index == current:
                     self._disable_feed_assist(
                         current, allow_reconnect=False)
-                retract_distance = (
-                    float(self.calibration_record['parking_distance'])
-                    if valid_calibration
-                    else float(self.toolchange_retract_length))
                 self._retract_in_chunks(
                     current,
                     retract_distance,
@@ -844,9 +849,7 @@ class BunnyAce:
                     'ACE：清道回抽结束后上下传感器未全部清除')
 
             self._set_slot_position(
-                current,
-                'preload_parked_estimated'
-                if valid_calibration else 'internal_or_unknown')
+                current, parked_position)
             self._save_current_index(-1)
         except Exception:
             self._set_slot_position(current, 'unknown')
@@ -2591,7 +2594,7 @@ class BunnyAce:
                 self._feed_until_sensor(
                     tool,
                     'extruder_sensor',
-                    self.toolchange_load_length,
+                    self._preload_feed_limit(tool),
                     self.feed_fast_speed,
                     'ACE：送料 %.1f mm 后上方传感器仍未触发')
             except FilamentFeedError as exc:
@@ -2601,6 +2604,7 @@ class BunnyAce:
             self.gcode.respond_info(
                 'ACE：上方传感器已经触发，跳过 ACE 送料')
         self.variables['ace_filament_pos'] = "spliter"
+        self._set_slot_position(tool, 'upper_sensor')
 
         self.wait_ace_ready()
 
@@ -2637,12 +2641,14 @@ class BunnyAce:
             self.dwell(delay=0.01)
 
         self.variables['ace_filament_pos'] = "toolhead"
+        self._set_slot_position(tool, 'toolhead')
 
         self._set_toolchange_phase('EXTRUDER_FEED_TO_NOZZLE')
         self._extruder_move(
             self.toolhead_sensor_to_nozzle_length,
             self.toolhead_to_nozzle_speed)
         self.variables['ace_filament_pos'] = "nozzle"
+        self._set_slot_position(tool, 'nozzle')
 
     cmd_ACE_CHANGE_TOOL_help = 'Changes tool'
 
@@ -2652,15 +2658,37 @@ class BunnyAce:
 
         if tool < -1 or tool >= 4:
             raise gcmd.error('工具槽位错误')
+        if self._motion_owner is not None:
+            raise gcmd.error(
+                'ACE：%s 正在运行，不能同时启动普通换料' %
+                self._motion_owner)
 
         was = self.variables.get('ace_current_index', -1)
         recovery_pending = self._pending_toolchange_recovery
         recovery_phase = (recovery_pending or {}).get('phase', '')
+        same_tool_partial_load = False
         if was == tool:
-            gcmd.respond_info('ACE：当前已经是 T%d，无需换料' % tool)
-            if tool >= 0:
+            if tool == -1:
+                gcmd.respond_info('ACE：当前已经是未装载状态')
+                return
+            position = self.slot_positions[tool]
+            upper = self._sensor_present('extruder_sensor')
+            lower = self._sensor_present('toolhead_sensor')
+            if position == 'nozzle' and lower:
+                gcmd.respond_info('ACE：当前 T%d 已确认送入喷嘴' % tool)
                 self._enable_feed_assist(tool)
-            return
+                return
+            if ((position == 'toolhead' and lower)
+                    or (position == 'upper_sensor' and upper and not lower)):
+                same_tool_partial_load = True
+                gcmd.respond_info(
+                    'ACE：当前 T%d 位于%s，将继续完成送入喷嘴' % (
+                        tool,
+                        '下方传感器' if position == 'toolhead'
+                        else '上方传感器'))
+            else:
+                raise gcmd.error(
+                    'ACE：当前槽位与传感器状态矛盾，禁止跳过安全换料流程')
 
         if self._toolchange_context is not None:
             raise gcmd.error('ACE：另一个换料流程正在执行')
@@ -2692,6 +2720,7 @@ class BunnyAce:
             'resume_attempts': 0,
             'started': self.reactor.monotonic(),
         }
+        self._acquire_motion('普通换料')
         gcmd.respond_info(
             'ACE：换料 %s -> %s 已开始' % (
                 self._tool_label(was), self._tool_label(tool)))
@@ -2701,16 +2730,21 @@ class BunnyAce:
                 '_ACE_PRE_TOOLCHANGE FROM=' + str(was) + ' TO=' + str(tool))
 
             logging.info('ACE: Toolchange ' + str(was) + ' => ' + str(tool))
-            if was != -1:
+            if same_tool_partial_load:
+                self._park_to_toolhead(
+                    tool, gcmd, endless_spool_was_enabled)
+            elif was != -1:
                 self._set_toolchange_phase('DISABLE_OLD_FEED_ASSIST')
                 self._disable_feed_assist(was)
                 self.wait_ace_ready()
                 filament_pos = self.variables.get('ace_filament_pos', "spliter")
+                slot_position = self.slot_positions[was]
                 upper_detected = bool(sensor_extruder.runout_helper.filament_present)
                 lower_detected = self._check_endstop_state('toolhead_sensor')
                 self.gcode.respond_info(
-                    'ACE：卸料状态：保存位置=%s，上方传感器=%s，下方传感器=%s' % (
-                        filament_pos,
+                    'ACE：卸料状态：槽位位置=%s，兼容位置=%s，'
+                    '上方传感器=%s，下方传感器=%s' % (
+                        slot_position, filament_pos,
                         '已触发' if upper_detected else '未触发',
                         '已触发' if lower_detected else '未触发'))
 
@@ -2718,17 +2752,26 @@ class BunnyAce:
                 skip_cutter_after_reconnect = recovery_phase in (
                     'CUT_COMPLETE', 'OLD_TOOLHEAD_RETRACT',
                     'OLD_BOWDEN_RETRACT')
-                if lower_detected and not skip_cutter_after_reconnect:
+                if (lower_detected and slot_position == 'nozzle'
+                        and not skip_cutter_after_reconnect):
                     self._set_toolchange_phase('CUTTING')
                     self.gcode.respond_info(
                         'ACE：下方传感器已触发，正在执行 CUT_TIP 切料')
                     self.gcode.run_script_from_command('CUT_TIP')
                     self.variables['ace_filament_pos'] = "toolhead"
+                    self._set_slot_position(was, 'toolhead')
                     self._set_toolchange_phase('CUT_COMPLETE')
-                elif filament_pos == "nozzle":
+                elif lower_detected and slot_position == 'toolhead':
                     self.gcode.respond_info(
-                        'ACE：保存的位置为喷嘴，但上下传感器均未确认挤出机下方有料，'
-                        '已忽略该过期状态')
+                        'ACE：耗材只到下方传感器，跳过切刀并直接安全回抽')
+                elif lower_detected:
+                    self._set_slot_position(was, 'unknown')
+                    raise gcmd.error(
+                        'ACE：下方传感器有料但槽位位置不可信，已停止换料')
+                elif slot_position == 'nozzle':
+                    self._set_slot_position(was, 'unknown')
+                    raise gcmd.error(
+                        'ACE：保存位置为喷嘴但下方传感器未触发，已停止换料')
 
                 if upper_detected or lower_detected:
                     self.gcode.respond_info(
@@ -2750,12 +2793,15 @@ class BunnyAce:
                     self.variables['ace_filament_pos'] = "bowden"
 
                 self.wait_ace_ready()
+                parking_distance, parked_position = (
+                    self._parking_retract_profile())
                 self._retract_in_chunks(
                     was,
-                    self.toolchange_retract_length,
+                    parking_distance,
                     self.retract_fast_speed,
                     'OLD_BOWDEN_RETRACT')
                 self.variables['ace_filament_pos'] = "spliter"
+                self._set_slot_position(was, parked_position)
                 self.variables['ace_current_index'] = -1
                 self.gcode.run_script_from_command(
                     'SAVE_VARIABLE VARIABLE=ace_current_index VALUE=-1')
@@ -2820,6 +2866,7 @@ class BunnyAce:
                         'ACE: Failed to disable feed assist during cleanup')
             raise
         finally:
+            self._release_motion('普通换料')
             self._park_in_progress = False
             if endless_spool_was_enabled:
                 self.endless_spool_enabled = True
