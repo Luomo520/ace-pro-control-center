@@ -157,6 +157,70 @@ def make_retract_motion_ace(clear_after_distance=7.0):
     return ace
 
 
+def make_preload_ace(confirm=1, print_state="standby", upper=False,
+                     lower=False, position="unknown", current_index=-1):
+    ace = make_motion_ace(trigger_after_feed_calls=99)
+    ace.printer = FakePrinter(print_state)
+    ace.variables["ace_current_index"] = current_index
+    ace.slot_positions = ["unknown"] * 4
+    if 0 <= current_index < 4:
+        ace.slot_positions[current_index] = position
+    ace._preload_upper = bool(upper)
+    ace._preload_lower = bool(lower)
+    ace.motion_calls = []
+    ace.cold_extruder_steps = []
+    ace.feed_fast_speed = 160.0
+    ace.retract_fast_speed = 120.0
+    ace.toolchange_retract_length = 1200.0
+    ace._feed_assist_index = -1
+    ace.toolhead_feed_fast_length = 10.0
+    ace.toolhead_feed_fast_step = 5.0
+    ace.toolhead_feed_fast_speed = 8.0
+    ace.toolhead_feed_slow_step = 1.0
+    ace.toolhead_feed_slow_speed = 5.0
+    ace.toolhead_sensor_max_feed_length = 20.0
+    ace.toolhead_sensor_to_nozzle_length = 80.0
+    ace._info["slots"] = [{"status": "ready"} for _ in range(4)]
+
+    def sensor_present(name):
+        if name == "extruder_sensor":
+            return ace._preload_upper
+        if name == "toolhead_sensor":
+            return ace._preload_lower
+        return False
+
+    def feed_until_sensor(index, sensor_name, length, speed, message):
+        ace.motion_calls.append(
+            ("ace_feed", index, sensor_name, length, speed, message))
+        ace._preload_upper = True
+        return 10.0
+
+    def cold_extruder_move(length, speed):
+        ace.motion_calls.append(("cold_extruder", length, speed))
+        ace.cold_extruder_steps.append(float(length))
+        if len([call for call in ace.motion_calls
+                if call[0] == "cold_extruder" and call[1] > 0]) >= 2:
+            ace._preload_lower = True
+
+    ace._sensor_present = sensor_present
+    ace._feed_until_sensor = feed_until_sensor
+    ace._enable_feed_assist = lambda index: ace.motion_calls.append(
+        ("enable_assist", index))
+    ace._disable_feed_assist = lambda index, **_kwargs: ace.motion_calls.append(
+        ("disable_assist", index))
+    def retract_in_chunks(index, length, speed, phase):
+        ace.motion_calls.append(
+            ("ace_retract", index, float(length), speed, phase))
+        ace._preload_upper = False
+
+    ace._retract_in_chunks = retract_in_chunks
+    ace._cold_extruder_move = cold_extruder_move
+    ace._save_current_index = lambda index: ace.variables.__setitem__(
+        "ace_current_index", index)
+    gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": confirm})
+    return ace, gcmd
+
+
 def make_calibration_record(**overrides):
     record = {
         "format_version": 1,
@@ -401,6 +465,94 @@ class AceCalibrationMotionTests(unittest.TestCase):
         self.assertEqual(record["parking_distance"], 12.0)
         self.assertTrue(record["valid"])
         self.assertEqual(ace._calibration_phase, "saved")
+
+
+class AcePreloadTests(unittest.TestCase):
+    def test_preload_without_confirm_never_moves(self):
+        ace, gcmd = make_preload_ace(confirm=0)
+
+        ace.cmd_ACE_PRELOAD(gcmd)
+
+        self.assertEqual(ace.motion_calls, [])
+        self.assertTrue(any("CONFIRM=1" in message
+                            for message in gcmd.messages))
+
+    def test_preload_is_blocked_while_printing(self):
+        ace, gcmd = make_preload_ace(print_state="printing")
+        ace.slot_positions[0] = "preload_parked_estimated"
+
+        with self.assertRaises(RuntimeError):
+            ace.cmd_ACE_PRELOAD(gcmd)
+
+        self.assertEqual(ace.motion_calls, [])
+        self.assertEqual(
+            ace.slot_positions[0], "preload_parked_estimated")
+
+    def test_preload_rejects_lower_sensor_with_unknown_position(self):
+        ace, gcmd = make_preload_ace(
+            lower=True, position="unknown", current_index=0)
+
+        with self.assertRaises(RuntimeError):
+            ace.cmd_ACE_PRELOAD(gcmd)
+
+        self.assertEqual(ace.motion_calls, [])
+
+    def test_cold_preload_stops_on_lower_sensor_without_nozzle_distance(self):
+        ace, gcmd = make_preload_ace()
+
+        ace.cmd_ACE_PRELOAD(gcmd)
+
+        self.assertEqual(ace.cold_extruder_steps, [5.0, 5.0])
+        self.assertNotIn(
+            ace.toolhead_sensor_to_nozzle_length,
+            ace.cold_extruder_steps)
+        self.assertEqual(ace.slot_positions[0], "toolhead")
+        self.assertEqual(ace.variables["ace_current_index"], 0)
+        scripts = "\n".join(ace.gcode.scripts)
+        self.assertNotIn("_ACE_PRE_TOOLCHANGE", scripts)
+        self.assertNotIn("CUT_TIP", scripts)
+        self.assertNotIn("M109", scripts)
+        self.assertNotIn("G28", scripts)
+
+    def test_preload_clears_known_upper_path_before_loading_target(self):
+        ace, gcmd = make_preload_ace(
+            upper=True, position="upper_sensor", current_index=1)
+        ace.calibration_record = make_calibration_record(
+            feed_completed=15.0,
+            feed_upper_bound=20.0,
+            bowden_tube_length=10.0,
+            parking_margin=2.0,
+            parking_distance=12.0)
+
+        ace.cmd_ACE_PRELOAD(gcmd)
+
+        retract = next(call for call in ace.motion_calls
+                       if call[0] == "ace_retract")
+        self.assertEqual(retract[1:3], (1, 12.0))
+        self.assertEqual(
+            ace.slot_positions[1], "preload_parked_estimated")
+        self.assertEqual(ace.slot_positions[0], "toolhead")
+        self.assertLess(
+            ace.motion_calls.index(retract),
+            next(index for index, call in enumerate(ace.motion_calls)
+                 if call[0] == "ace_feed"))
+
+    def test_clear_failure_marks_old_slot_unknown_and_preserves_target(self):
+        ace, gcmd = make_preload_ace(
+            upper=True, position="upper_sensor", current_index=1)
+        ace.slot_positions[0] = "preload_parked_estimated"
+
+        def fail_retract(_index, _length, _speed, _phase):
+            raise RuntimeError("simulated clear failure")
+
+        ace._retract_in_chunks = fail_retract
+
+        with self.assertRaises(RuntimeError):
+            ace.cmd_ACE_PRELOAD(gcmd)
+
+        self.assertEqual(ace.slot_positions[1], "unknown")
+        self.assertEqual(
+            ace.slot_positions[0], "preload_parked_estimated")
 
 
 if __name__ == "__main__":

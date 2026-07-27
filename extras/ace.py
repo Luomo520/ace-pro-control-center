@@ -404,6 +404,9 @@ class BunnyAce:
         self.gcode.register_command(
             'ACE_CALIBRATION_CANCEL', self.cmd_ACE_CALIBRATION_CANCEL,
             desc=self.cmd_ACE_CALIBRATION_CANCEL_help)
+        self.gcode.register_command(
+            'ACE_PRELOAD', self.cmd_ACE_PRELOAD,
+            desc=self.cmd_ACE_PRELOAD_help)
 
     def _load_slot_positions(self):
         saved = self.variables.get('ace_slot_positions')
@@ -747,6 +750,183 @@ class BunnyAce:
         self._calibration_phase = 'idle'
         self._calibration_last_error = ''
         gcmd.respond_info('ACE：已取消未保存的距离标定结果')
+
+    def _cold_extruder_move(self, length, speed):
+        self.gcode.run_script_from_command(
+            'FORCE_MOVE STEPPER=extruder DISTANCE=%.3f VELOCITY=%.3f\nM400'
+            % (float(length), float(speed)))
+
+    def _preload_feed_limit(self, index):
+        if (self.slot_positions[index] == 'preload_parked_estimated'
+                and calibration_is_valid(
+                    self.calibration_record,
+                    self.bowden_tube_length,
+                    self.five_way_parking_margin)):
+            return float(self.calibration_record['parking_distance'])
+        return float(self.toolchange_load_length)
+
+    def _require_preload_preflight(self, index):
+        state = self._print_state()
+        if state in ('printing', 'paused'):
+            raise RuntimeError('ACE：打印或暂停期间禁止冷态预装载')
+        if not self._connected or self._info.get('status') != 'ready':
+            raise RuntimeError('ACE：设备未连接或尚未就绪')
+        slots = self._info.get('slots') or []
+        if len(slots) <= index or slots[index].get('status') != 'ready':
+            raise RuntimeError('ACE：目标槽位 T%d 未就绪' % index)
+
+        current = int(self.variables.get('ace_current_index', -1))
+        upper = self._sensor_present('extruder_sensor')
+        lower = self._sensor_present('toolhead_sensor')
+        current_position = (
+            self.slot_positions[current]
+            if 0 <= current < 4 else 'unknown')
+        if lower and current_position in (
+                'nozzle', 'unknown', 'internal_or_unknown'):
+            raise RuntimeError(
+                'ACE：下方传感器有料且位置不可信，禁止冷态回抽；'
+                '请先加热并执行安全卸料')
+        if (upper or lower) and not 0 <= current < 4:
+            raise RuntimeError(
+                'ACE：传感器检测到耗材但当前槽位未知，禁止猜测槽位')
+        if lower and current_position != 'toolhead':
+            raise RuntimeError(
+                'ACE：下方传感器状态与保存位置矛盾，禁止冷态回抽')
+        if (upper and current_position not in ('upper_sensor', 'toolhead')):
+            raise RuntimeError(
+                'ACE：上方传感器状态与保存位置矛盾，禁止猜测回抽距离')
+
+    def _clear_preload_path(self):
+        upper = self._sensor_present('extruder_sensor')
+        lower = self._sensor_present('toolhead_sensor')
+        if not upper and not lower:
+            return
+
+        current = int(self.variables.get('ace_current_index', -1))
+        if not 0 <= current < 4:
+            raise RuntimeError('ACE：清道回抽缺少可信的当前槽位')
+
+        try:
+            cold_retracted = 0.
+            while self._sensor_present('toolhead_sensor'):
+                if cold_retracted >= self.toolhead_sensor_max_feed_length:
+                    raise RuntimeError(
+                        'ACE：冷态反向清道 %.1f mm 后下方传感器仍未解除'
+                        % cold_retracted)
+                step = min(
+                    self.toolhead_feed_slow_step,
+                    self.toolhead_sensor_max_feed_length - cold_retracted)
+                self._cold_extruder_move(
+                    -step, self.toolhead_feed_slow_speed)
+                cold_retracted += step
+
+            valid_calibration = calibration_is_valid(
+                self.calibration_record,
+                self.bowden_tube_length,
+                self.five_way_parking_margin)
+            if self._sensor_present('extruder_sensor'):
+                if self._feed_assist_index == current:
+                    self._disable_feed_assist(
+                        current, allow_reconnect=False)
+                retract_distance = (
+                    float(self.calibration_record['parking_distance'])
+                    if valid_calibration
+                    else float(self.toolchange_retract_length))
+                self._retract_in_chunks(
+                    current,
+                    retract_distance,
+                    self.retract_fast_speed,
+                    'PRELOAD_CLEAR')
+
+            if (self._sensor_present('extruder_sensor')
+                    or self._sensor_present('toolhead_sensor')):
+                raise RuntimeError(
+                    'ACE：清道回抽结束后上下传感器未全部清除')
+
+            self._set_slot_position(
+                current,
+                'preload_parked_estimated'
+                if valid_calibration else 'internal_or_unknown')
+            self._save_current_index(-1)
+        except Exception:
+            self._set_slot_position(current, 'unknown')
+            raise
+
+    def _preload_to_toolhead(self, index):
+        self.wait_ace_ready()
+        if not self._sensor_present('extruder_sensor'):
+            feed_limit = self._preload_feed_limit(index)
+            self._feed_until_sensor(
+                index,
+                'extruder_sensor',
+                feed_limit,
+                self.feed_fast_speed,
+                'ACE：冷态预装载送料 %.1f mm 后上方传感器仍未触发')
+        if not self._sensor_present('extruder_sensor'):
+            raise FilamentFeedError('ACE：冷态预装载未确认上方传感器')
+
+        self._set_slot_position(index, 'upper_sensor')
+        self._save_current_index(index)
+        self.wait_ace_ready()
+        self._enable_feed_assist(index)
+
+        moved = 0.
+        while not self._sensor_present('toolhead_sensor'):
+            if moved >= self.toolhead_sensor_max_feed_length:
+                raise FilamentFeedError(
+                    'ACE：冷态挤出机送料 %.1f mm 后下方传感器仍未触发'
+                    % moved)
+            remaining = self.toolhead_sensor_max_feed_length - moved
+            if moved < self.toolhead_feed_fast_length:
+                step = min(
+                    self.toolhead_feed_fast_step,
+                    self.toolhead_feed_fast_length - moved,
+                    remaining)
+                speed = self.toolhead_feed_fast_speed
+            else:
+                step = min(self.toolhead_feed_slow_step, remaining)
+                speed = self.toolhead_feed_slow_speed
+            self._cold_extruder_move(step, speed)
+            moved += step
+
+        self._set_slot_position(index, 'toolhead')
+        self._save_current_index(index)
+        return moved
+
+    cmd_ACE_PRELOAD_help = (
+        'Cold preload one ACE slot to the lower sensor - INDEX= CONFIRM=1')
+
+    def cmd_ACE_PRELOAD(self, gcmd):
+        index = gcmd.get_int('INDEX')
+        if index < 0 or index >= 4:
+            raise gcmd.error('ACE：槽位编号必须为 0-3')
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：将冷态预装载 T%d，只送到下方传感器；确认后请执行 '
+                'ACE_PRELOAD INDEX=%d CONFIRM=1' % (index, index))
+            return
+
+        target_motion_started = False
+        try:
+            self._require_preload_preflight(index)
+            self._acquire_motion('冷态预装载')
+            self._clear_preload_path()
+            target_motion_started = True
+            moved = self._preload_to_toolhead(index)
+            gcmd.respond_info(
+                'ACE：T%d 冷态预装载完成，挤出机送料 %.1f mm，'
+                '已停在下方传感器' % (index, moved))
+        except Exception as exc:
+            if target_motion_started:
+                self._set_slot_position(index, 'unknown')
+            try:
+                if self._connected and self._feed_assist_index == index:
+                    self._disable_feed_assist(index, allow_reconnect=False)
+            except Exception:
+                logging.exception('ACE: Failed to stop preload feed assist')
+            raise gcmd.error(str(exc))
+        finally:
+            self._release_motion('冷态预装载')
 
 
     def _calc_crc(self, buffer):
