@@ -86,5 +86,13 @@ jobs:
           pnpm lint
           pnpm build
 
+      - name: Upload Linux Fluidd distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluidd-dist-linux-${{ github.sha }}
+          path: fluidd-upstream/dist
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Compare reproducible Fluidd distribution
         run: diff -qr fluidd-upstream/dist fluidd-dist
