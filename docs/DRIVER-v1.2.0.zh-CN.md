@@ -166,11 +166,14 @@ flowchart LR
 | `parking_sensor_debounce_count` | 3 | 连续目标状态次数，降低微动抖动误停 |
 | `five_way_parking_margin` | 20 mm | 只用于无五通传感器的兼容估算路径 |
 | `calibration_max_retract_length` | 1500 mm | 搜索五通传感器解除状态的回抽上限 |
-| `calibration_speed` | 25 mm/s | 自动探测送料/回料速度 |
-| `calibration_chunk_length` | 5 mm | 常规测量分段，用于形成触发距离范围 |
-| `calibration_final_chunk_length` | 2 mm | 最后接近阶段的精细分段 |
+| `calibration_feed_speed` | 160 mm/s | 自动探测送料速度，触发上方传感器后立即请求停止 |
+| `calibration_retract_speed` | 120 mm/s | 自动探测回抽速度 |
+| `calibration_chunk_length` | 100 mm | 粗测分段，结果允许约一个分段范围的误差 |
+| `calibration_final_chunk_length` | 100 mm | 接近估算停放点时的末段长度，不再追求毫米级精测 |
 
 `parking_sensor_clear_move_length` 已包含用户希望保留的距离和安全余量，不再叠加 `five_way_parking_margin`。
+
+旧配置中的 `calibration_speed` 仍可读取，并在未填写两个独立速度时同时作为送料和回抽速度。新配置应优先使用独立速度。粗测分段的目的是减少频繁启停、ACE 就绪等待，以及料盘转动和耗材弹性对小步测量的放大；默认精度目标约为 `±100 mm`，不适合当作毫米级机械标定值。
 
 ## 10. 自动探测料管长度
 

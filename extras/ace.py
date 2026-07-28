@@ -419,12 +419,26 @@ class BunnyAce:
             float(self.toolchange_load_length)
             + float(self.feed_slip_compensation_length),
             above=0.)
-        self.calibration_speed = config.getfloat(
-            'calibration_speed', 25., above=0.)
+        legacy_calibration_speed = config.get('calibration_speed', None)
+        if legacy_calibration_speed is not None:
+            legacy_calibration_speed = config.getfloat(
+                'calibration_speed', 25., above=0.)
+        self.calibration_feed_speed = config.getfloat(
+            'calibration_feed_speed',
+            legacy_calibration_speed
+            if legacy_calibration_speed is not None
+            else float(self.feed_fast_speed),
+            above=0.)
+        self.calibration_retract_speed = config.getfloat(
+            'calibration_retract_speed',
+            legacy_calibration_speed
+            if legacy_calibration_speed is not None
+            else float(self.retract_fast_speed),
+            above=0.)
         self.calibration_chunk_length = config.getfloat(
-            'calibration_chunk_length', 5., above=0.)
+            'calibration_chunk_length', 100., above=0.)
         self.calibration_final_chunk_length = config.getfloat(
-            'calibration_final_chunk_length', 2., above=0.)
+            'calibration_final_chunk_length', 100., above=0.)
         self._calibration_preview = None
         self._calibration_phase = 'idle'
         self._calibration_last_error = ''
@@ -825,7 +839,7 @@ class BunnyAce:
                 float(self.calibration_chunk_length),
                 max_distance - completed)
             result = self._feed(
-                index, step, self.calibration_speed,
+                index, step, self.calibration_feed_speed,
                 stop_sensor='extruder_sensor')
             if result.get('uncertain'):
                 raise RuntimeError(
@@ -837,7 +851,6 @@ class BunnyAce:
                 upper_bound = completed + step
                 break
             completed += step
-            self.wait_ace_ready()
         else:
             raise FilamentFeedError(
                 'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发'
@@ -867,7 +880,7 @@ class BunnyAce:
                 raise RuntimeError('ACE：上方传感器在送料标定前已触发')
             if self.parking_sensor_enabled:
                 result = self._feed(
-                    index, max_distance, self.calibration_speed,
+                    index, max_distance, self.calibration_feed_speed,
                     stop_sensor='extruder_sensor')
                 if result.get('uncertain'):
                     raise RuntimeError(
@@ -931,7 +944,7 @@ class BunnyAce:
                 'ACE：将使用 T%d 以 %.1f mm/s 连续送料到上方传感器；'
                 '该送料请求不作为距离测量。确认后请执行 '
                 'ACE_CALIBRATE_FEED INDEX=%d CONFIRM=1' % (
-                    index, self.calibration_speed, index))
+                    index, self.calibration_feed_speed, index))
             return
         try:
             self._require_calibration_preflight()
@@ -1097,7 +1110,7 @@ class BunnyAce:
             result = self._retract(
                 index,
                 step,
-                self.calibration_speed,
+                self.calibration_retract_speed,
                 stop_sensor='parking_sensor',
                 stop_when_present=False,
                 stop_debounce_count=self.parking_sensor_debounce_count)
@@ -1109,7 +1122,6 @@ class BunnyAce:
             if (result.get('stopped_by_sensor')
                     or not self._sensor_present('parking_sensor')):
                 return completed
-            self.wait_ace_ready()
         return completed
 
     def _calibrate_retract(self):
@@ -1167,7 +1179,8 @@ class BunnyAce:
                     raise RuntimeError(
                         'ACE：达到估算停车距离后上方传感器仍未解除')
                 step = min(float(self.calibration_chunk_length), remaining)
-                result = self._retract(index, step, self.calibration_speed)
+                result = self._retract(
+                    index, step, self.calibration_retract_speed)
                 if result.get('uncertain'):
                     raise RuntimeError(
                         'ACE：标定回料连接状态不确定，未重放该分段')
@@ -1175,7 +1188,6 @@ class BunnyAce:
                     sensor_clear_completed = retracted
                     sensor_clear_upper_bound = retracted + step
                 retracted += step
-                self.wait_ace_ready()
 
             if sensor_clear_upper_bound is None:
                 raise RuntimeError('ACE：未能记录上方传感器解除距离')
@@ -1186,12 +1198,12 @@ class BunnyAce:
                     self.calibration_final_chunk_length
                     if remaining <= 20. else self.calibration_chunk_length)
                 step = min(float(chunk), remaining)
-                result = self._retract(index, step, self.calibration_speed)
+                result = self._retract(
+                    index, step, self.calibration_retract_speed)
                 if result.get('uncertain'):
                     raise RuntimeError(
                         'ACE：停车回料连接状态不确定，未重放该分段')
                 retracted += step
-                self.wait_ace_ready()
 
             if (self._sensor_present('extruder_sensor')
                     or self._sensor_present('toolhead_sensor')):

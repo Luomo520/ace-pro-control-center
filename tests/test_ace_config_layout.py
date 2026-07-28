@@ -32,6 +32,14 @@ class AceConfigLayoutTests(unittest.TestCase):
         config = CONFIG_PATH.read_text(encoding="utf-8")
         self.assertIn("enable_debug_rpc: False", config)
 
+    def test_distance_probe_defaults_use_fast_coarse_motion(self):
+        config = CONFIG_PATH.read_text(encoding="utf-8")
+        self.assertIn("calibration_feed_speed: 160", config)
+        self.assertIn("calibration_retract_speed: 120", config)
+        self.assertIn("calibration_chunk_length: 100", config)
+        self.assertIn("calibration_final_chunk_length: 100", config)
+        self.assertNotIn("\ncalibration_speed:", config)
+
     def test_missing_save_variables_has_an_actionable_error(self):
         driver = DRIVER_PATH.read_text(encoding="utf-8")
         self.assertIn(

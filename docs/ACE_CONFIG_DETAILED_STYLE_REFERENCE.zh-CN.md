@@ -178,9 +178,12 @@ parameter_name: value
 ### 九、自动探测料管长度
 
 - `calibration_max_retract_length`
-- `calibration_speed`
+- `calibration_feed_speed`
+- `calibration_retract_speed`
 - `calibration_chunk_length`
 - `calibration_final_chunk_length`
+
+默认采用高速粗测：送料 160 mm/s、回抽 120 mm/s、粗测和末段均为 100 mm。旧 `calibration_speed` 仅用于兼容已有配置；新模板不再使用该条目。粗测结果允许约 `±100 mm` 误差，以减少短距离启停、重复等待、料盘转动和耗材弹性造成的放大误差。
 
 界面完成后应按模式显示：
 

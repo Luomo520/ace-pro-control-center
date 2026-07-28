@@ -140,7 +140,8 @@ def make_motion_ace(trigger_after_feed_calls=2):
     ace._calibration_preview = None
     ace._calibration_phase = "idle"
     ace._calibration_last_error = ""
-    ace.calibration_speed = 25.0
+    ace.calibration_feed_speed = 160.0
+    ace.calibration_retract_speed = 120.0
     ace.calibration_chunk_length = 5.0
     ace.calibration_final_chunk_length = 2.0
     ace.toolchange_load_length = 20.0
@@ -621,6 +622,20 @@ class AceCalibrationMotionTests(unittest.TestCase):
         self.assertEqual(preview["phase"], "feed_complete")
         self.assertEqual(ace.slot_positions[0], "upper_sensor")
 
+    def test_calibrate_feed_uses_coarse_chunks_without_per_chunk_waits(self):
+        ace = make_motion_ace(trigger_after_feed_calls=2)
+        ace.toolchange_load_length = 300.0
+        ace.calibration_chunk_length = 100.0
+        waits = []
+        ace.wait_ace_ready = lambda timeout=None: waits.append(timeout)
+
+        preview = ace._calibrate_feed(0)
+
+        self.assertEqual(ace.feed_lengths, [100.0, 100.0])
+        self.assertEqual(preview["feed_completed"], 100.0)
+        self.assertEqual(preview["feed_upper_bound"], 200.0)
+        self.assertEqual(waits, [])
+
     def test_uncertain_feed_discards_preview_and_does_not_retry_chunk(self):
         ace = make_motion_ace(trigger_after_feed_calls=99)
 
@@ -700,6 +715,41 @@ class AceCalibrationMotionTests(unittest.TestCase):
         self.assertEqual(preview["upper_to_parking_sensor_distance"], 5.0)
         self.assertEqual(preview["upper_to_parking_distance"], 80.0)
         self.assertTrue(preview["parking_sensor_cleared"])
+
+    def test_sensor_guided_retract_uses_coarse_speed_without_per_chunk_waits(self):
+        ace = make_retract_motion_ace(clear_after_distance=99.0)
+        ace.parking_sensor_enabled = True
+        ace.parking_sensor_clear_move_length = 75.0
+        ace.parking_sensor_debounce_count = 3
+        ace.calibration_chunk_length = 100.0
+        ace.calibration_max_retract_length = 1500.0
+        ace._parking_present = True
+        calls = []
+        waits = []
+
+        def sensor_present(name):
+            if name in ("extruder_sensor", "parking_sensor"):
+                return ace._parking_present
+            return False
+
+        def retract(_index, length, speed, **kwargs):
+            calls.append((float(length), float(speed), kwargs))
+            if kwargs.get("stop_sensor") == "parking_sensor":
+                ace._parking_present = False
+                return {"stopped_by_sensor": True}
+            return {}
+
+        ace._sensor_present = sensor_present
+        ace._retract = retract
+        ace.wait_ace_ready = lambda timeout=None: waits.append(timeout)
+
+        preview = ace._calibrate_retract()
+
+        self.assertEqual([call[0] for call in calls], [100.0, 75.0])
+        self.assertEqual(calls[0][1], 120.0)
+        self.assertEqual(preview["upper_to_parking_sensor_distance"], 100.0)
+        self.assertEqual(preview["upper_to_parking_distance"], 175.0)
+        self.assertEqual(waits, [None])
 
     def test_sensor_guided_retract_rejects_uncertain_final_offset(self):
         ace = make_retract_motion_ace(clear_after_distance=99.0)
