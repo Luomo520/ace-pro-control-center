@@ -89,6 +89,14 @@ export interface AceProCalibrationState {
   lastError: string;
 }
 
+export interface AceProConfigurationState {
+  aceConfigVersion: number | null;
+  extruderSensorDebounceCount: number | null;
+  toolheadSensorDebounceCount: number | null;
+  toolchangeFeedHardLimit: number | null;
+  toolchangeRetractHardLimit: number | null;
+}
+
 export interface AceProResolvedSlot {
   index: number;
   isActive: boolean;
@@ -107,6 +115,7 @@ export interface AceProResolvedSlot {
 
 export interface AceProResolvedState {
   detected: boolean;
+  stale: boolean;
   objectKey?: string;
   connected: boolean;
   model: string;
@@ -127,6 +136,7 @@ export interface AceProResolvedState {
   motionOwner: string;
   activeMotion: Record<string, any>;
   calibration: AceProCalibrationState;
+  configuration: AceProConfigurationState;
   sensors: {
     upper: AceProSensorState;
     lower: AceProSensorState;

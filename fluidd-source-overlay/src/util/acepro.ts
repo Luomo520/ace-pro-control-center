@@ -2,6 +2,7 @@ import type {
   AceProAutoDryingReason,
   AceProAutoDryingState,
   AceProCalibrationState,
+  AceProConfigurationState,
   AceProDryerStatus,
   AceProEndlessSpoolState,
   AceProHardwareSlot,
@@ -66,6 +67,16 @@ function safeNumber (value: unknown, fallback = 0): number {
     }
   }
 
+  return fallback
+}
+
+function optionalNumber (value: unknown, fallback: number | null = null): number | null {
+  if (value == null) return fallback
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
   return fallback
 }
 
@@ -208,6 +219,38 @@ function resolveCalibration (
     ),
     bowdenTubeLength: safeNumber(raw.bowden_tube_length, fallback?.bowdenTubeLength ?? 0),
     lastError: safeString(raw.last_error, fallback?.lastError ?? ''),
+  }
+}
+
+function resolveConfiguration (
+  value: unknown,
+  fallback?: AceProConfigurationState
+): AceProConfigurationState {
+  const raw = isObject(value) ? value : {}
+  const nested = isObject(raw.configuration) ? raw.configuration : {}
+  const read = (key: string, fallbackValue: number | null): number | null => {
+    const candidate = raw[key] ?? nested[key]
+    return optionalNumber(candidate, fallbackValue)
+  }
+
+  return {
+    aceConfigVersion: read('ace_config_version', fallback?.aceConfigVersion ?? null),
+    extruderSensorDebounceCount: read(
+      'extruder_sensor_debounce_count',
+      fallback?.extruderSensorDebounceCount ?? null
+    ),
+    toolheadSensorDebounceCount: read(
+      'toolhead_sensor_debounce_count',
+      fallback?.toolheadSensorDebounceCount ?? null
+    ),
+    toolchangeFeedHardLimit: read(
+      'toolchange_feed_hard_limit',
+      fallback?.toolchangeFeedHardLimit ?? null
+    ),
+    toolchangeRetractHardLimit: read(
+      'toolchange_retract_hard_limit',
+      fallback?.toolchangeRetractHardLimit ?? null
+    ),
   }
 }
 
@@ -444,6 +487,7 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
 
   return {
     detected,
+    stale: false,
     objectKey: aceProObjectKey,
     connected: acePro != null,
     model: safeString(acePro?.model, 'Anycubic Color Engine Pro'),
@@ -466,6 +510,7 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
     motionOwner: safeString(acePro?.motion_owner),
     activeMotion: isObject(acePro?.active_motion) ? acePro.active_motion : {},
     calibration: resolveCalibration(acePro?.calibration),
+    configuration: resolveConfiguration(acePro),
     sensors: {
       upper: resolveSensor(printerState, 'extruder_sensor'),
       lower: resolveSensor(printerState, 'toolhead_sensor'),
@@ -474,7 +519,9 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
         resolveSensor({}, 'parking_sensor')
       ),
     },
-    printing: safeString(printerState.print_stats?.state).toLowerCase() === 'printing',
+    printing: ['printing', 'paused'].includes(
+      safeString(printerState.print_stats?.state).toLowerCase()
+    ),
     warnings: [],
     toolchange: {
       active: false,
@@ -538,6 +585,7 @@ export function resolveAceProApiState (
 
     return {
       detected: true,
+      stale: safeBoolean(payload.stale, false),
       objectKey: 'ace',
       connected: safeBoolean(payload.connected, false),
       model: 'Anycubic Color Engine Pro',
@@ -560,12 +608,13 @@ export function resolveAceProApiState (
       motionOwner: safeString(payload.motion_owner),
       activeMotion: isObject(payload.active_motion) ? payload.active_motion : {},
       calibration: resolveCalibration(payload.calibration, fallback?.calibration),
+      configuration: resolveConfiguration(payload, fallback?.configuration),
       sensors: {
         upper: resolveApiSensor(sensors.upper, fallbackUpper),
         lower: resolveApiSensor(sensors.lower, fallbackLower),
         parking: resolveApiSensor(sensors.parking, fallbackParking),
       },
-      printing: safeBoolean(payload.printing, false),
+      printing: safeBoolean(payload.printing, false) || (fallback?.printing ?? false),
       warnings: resolveWarnings(payload.warnings),
       toolchange: {
         active: safeBoolean(payload.toolchange?.active, false),
@@ -640,6 +689,7 @@ export function resolveAceProApiState (
 
   return {
     detected: true,
+    stale: safeBoolean(payload.stale, fallback?.stale ?? false),
     connected: connectionState === 'connected',
     model: safeString(payload.model, fallback?.model ?? 'Anycubic Color Engine Pro'),
     firmware: safeString(payload.firmware, fallback?.firmware ?? ''),
@@ -663,6 +713,7 @@ export function resolveAceProApiState (
       ? payload.active_motion
       : (fallback?.activeMotion ?? {}),
     calibration: resolveCalibration(payload.calibration, fallback?.calibration),
+    configuration: resolveConfiguration(payload, fallback?.configuration),
     sensors: fallback?.sensors ?? {
       upper: resolveSensor({}, 'extruder_sensor'),
       lower: resolveSensor({}, 'toolhead_sensor'),

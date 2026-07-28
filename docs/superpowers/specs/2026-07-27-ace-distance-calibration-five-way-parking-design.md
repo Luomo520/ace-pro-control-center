@@ -43,9 +43,9 @@
 - `toolchange_load_length`：标定和完整装载允许的绝对最大安全行程，不再作为每次固定盲送距离。
 - `feed_approach_length`：正常送料最后的慢速接近区，固定为默认 100 mm，可配置。
 - `five_way_parking_margin`：将耗材尖端进一步退入五通独立支路的安全余量，默认 20 mm。
-- `calibration_speed`：首次送料和回料标定速度，默认 25 mm/s。
-- `calibration_chunk_length`：标定时的常规分段长度，默认 5 mm。
-- `calibration_final_chunk_length`：回料标定最后 20 mm 的精细分段长度，默认 2 mm。
+- `calibration_speed`：自动探测送料和回抽的共用速度，默认 25 mm/s；可用独立方向参数覆盖。
+- `calibration_chunk_length`：自动探测主体阶段的常规分段长度，默认 50 mm。
+- `calibration_final_chunk_length`：自动探测接近目标位置时的末段长度，默认 50 mm。
 
 预停放回抽距离采用共享近似值：
 
@@ -105,7 +105,7 @@ parking_retract_distance <= toolchange_load_length + feed_slip_compensation_leng
 
 1. 显示槽位、速度、最大距离和停止条件。
 2. 用户二次确认。
-3. 以 25 mm/s 按 `calibration_chunk_length` 标定段送料，每段前后监测带消抖的上方传感器。
+3. 以默认 25 mm/s 按 `calibration_chunk_length` 粗测段送料，并持续监测带消抖的上方传感器。
 4. 上方传感器稳定触发后立即停止，不再发送下一段运动。
 5. 保存“已完成分段距离”和“最后一段 0 至 `calibration_chunk_length` 不确定范围”到临时会话。保守执行值使用该范围上界，不将一次连续请求的完整长度误认为实际触发距离。
 6. 达到最大安全距离仍未触发时停止、报错并保持旧标定不变。
@@ -114,8 +114,8 @@ parking_retract_distance <= toolchange_load_length + feed_slip_compensation_leng
 
 1. 送料标定成功后显示回料动作预览。
 2. 用户再次确认。
-3. 以 `calibration_chunk_length` 分段低速回料并监测上方传感器稳定解除，记录已完成距离和最后一段不确定范围。
-4. 按计算后的剩余距离继续向 ACE 方向回收；最后 20 mm 使用 `calibration_final_chunk_length` 分段，以限制停止误差。
+3. 以 `calibration_chunk_length` 分段回料并监测上方传感器稳定解除，记录已完成距离和最后一段不确定范围。
+4. 按计算后的剩余距离继续向 ACE 方向回收；接近目标时使用 `calibration_final_chunk_length`，默认接受约一个分段范围的误差。
 5. 确认上下传感器均无料，将所选槽位临时标记为 `preload_parked_estimated`。
 6. 显示送料距离、传感器解除距离、总回料距离、管长和安全余量。
 7. 用户最终确认后才写入 `saved_variables.cfg`。
@@ -255,12 +255,12 @@ flowchart TD
     A["用户发起 ACE 操作"] --> B{"操作类型"}
 
     B -->|"距离标定"| C["检查打印机空闲、ACE 在线、上下传感器无料"]
-    C -->|"通过并确认"| D["25 mm/s、每段 5 mm 送料"]
+    C -->|"通过并确认"| D["默认 25 mm/s、每段 50 mm 送料"]
     D --> E{"上方传感器稳定触发？"}
     E -->|"否且未超限"| D
     E -->|"是"| F["停止并预览送料距离及不确定范围"]
-    F -->|"确认回料"| G["每段 5 mm 回料到上方传感器解除"]
-    G --> H["按计算距离回收，最后 20 mm 每段 2 mm"]
+    F -->|"确认回料"| G["默认每段 50 mm 回料到上方传感器解除"]
+    G --> H["按计算距离回收，末段默认 50 mm"]
     H --> I["标记预停放位置为估算值"]
     I -->|"确认保存"| J["保存共享距离和每槽位置状态"]
 

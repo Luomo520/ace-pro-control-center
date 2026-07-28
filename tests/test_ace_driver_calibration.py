@@ -140,8 +140,8 @@ def make_motion_ace(trigger_after_feed_calls=2):
     ace._calibration_preview = None
     ace._calibration_phase = "idle"
     ace._calibration_last_error = ""
-    ace.calibration_feed_speed = 160.0
-    ace.calibration_retract_speed = 120.0
+    ace.calibration_feed_speed = 25.0
+    ace.calibration_retract_speed = 25.0
     ace.calibration_chunk_length = 5.0
     ace.calibration_final_chunk_length = 2.0
     ace.toolchange_load_length = 20.0
@@ -624,16 +624,16 @@ class AceCalibrationMotionTests(unittest.TestCase):
 
     def test_calibrate_feed_uses_coarse_chunks_without_per_chunk_waits(self):
         ace = make_motion_ace(trigger_after_feed_calls=2)
-        ace.toolchange_load_length = 300.0
-        ace.calibration_chunk_length = 100.0
+        ace.toolchange_load_length = 150.0
+        ace.calibration_chunk_length = 50.0
         waits = []
         ace.wait_ace_ready = lambda timeout=None: waits.append(timeout)
 
         preview = ace._calibrate_feed(0)
 
-        self.assertEqual(ace.feed_lengths, [100.0, 100.0])
-        self.assertEqual(preview["feed_completed"], 100.0)
-        self.assertEqual(preview["feed_upper_bound"], 200.0)
+        self.assertEqual(ace.feed_lengths, [50.0, 50.0])
+        self.assertEqual(preview["feed_completed"], 50.0)
+        self.assertEqual(preview["feed_upper_bound"], 100.0)
         self.assertEqual(waits, [])
 
     def test_uncertain_feed_discards_preview_and_does_not_retry_chunk(self):
@@ -721,7 +721,7 @@ class AceCalibrationMotionTests(unittest.TestCase):
         ace.parking_sensor_enabled = True
         ace.parking_sensor_clear_move_length = 75.0
         ace.parking_sensor_debounce_count = 3
-        ace.calibration_chunk_length = 100.0
+        ace.calibration_chunk_length = 50.0
         ace.calibration_max_retract_length = 1500.0
         ace._parking_present = True
         calls = []
@@ -745,10 +745,10 @@ class AceCalibrationMotionTests(unittest.TestCase):
 
         preview = ace._calibrate_retract()
 
-        self.assertEqual([call[0] for call in calls], [100.0, 75.0])
-        self.assertEqual(calls[0][1], 120.0)
-        self.assertEqual(preview["upper_to_parking_sensor_distance"], 100.0)
-        self.assertEqual(preview["upper_to_parking_distance"], 175.0)
+        self.assertEqual([call[0] for call in calls], [50.0, 75.0])
+        self.assertEqual(calls[0][1], 25.0)
+        self.assertEqual(preview["upper_to_parking_sensor_distance"], 50.0)
+        self.assertEqual(preview["upper_to_parking_distance"], 125.0)
         self.assertEqual(waits, [None])
 
     def test_sensor_guided_retract_rejects_uncertain_final_offset(self):
@@ -1253,6 +1253,36 @@ class AceRuntimeSafetyTests(unittest.TestCase):
         self.assertIn("ACE_FEED_TO_UPPER", ace._toolchange_last_error)
         self.assertEqual(ace.slot_positions[1], "unknown")
         self.assertIsNone(ace._motion_owner)
+        self.assertIsNone(getattr(ace, "_active_ace_motion", None))
+        self.assertIsNone(ace._pending_toolchange_recovery)
+        self.assertIsNone(ace._toolchange_context)
+
+    def test_abort_without_active_motion_clears_only_historical_faults(self):
+        ace = make_motion_ace()
+        ace._active_ace_motion = None
+        ace._toolchange_context = None
+        ace._pending_toolchange_recovery = None
+        ace._toolchange_last_error = "上一次送料失败"
+        ace._calibration_preview = {"phase": "failed"}
+        ace._calibration_phase = "failed"
+        ace._calibration_last_error = "上一次探测失败"
+        ace._abort_requested = True
+        ace.slot_positions = ["unknown", "toolhead", "unknown", "unknown"]
+        gcmd = FakeGcmd()
+
+        ace.cmd_ACE_ABORT_TOOLCHANGE(gcmd)
+
+        self.assertIsNone(ace._toolchange_last_error)
+        self.assertEqual(ace._calibration_phase, "idle")
+        self.assertEqual(ace._calibration_last_error, "")
+        self.assertIsNone(ace._calibration_preview)
+        self.assertFalse(ace._abort_requested)
+        self.assertEqual(
+            ace.slot_positions,
+            ["unknown", "toolhead", "unknown", "unknown"],
+        )
+        self.assertTrue(any("耗材位置未改变" in message
+                            for message in gcmd.messages))
 
     def test_abort_active_feed_requests_protocol_stop(self):
         ace = make_motion_ace()

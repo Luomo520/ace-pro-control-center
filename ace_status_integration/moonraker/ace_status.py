@@ -51,6 +51,15 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -241,6 +250,24 @@ def _normalize_calibration(value: Any, available: bool = False) -> Dict[str, Any
     }
 
 
+def _normalize_configuration(ace: Mapping[str, Any]) -> Dict[str, Optional[int]]:
+    nested = _as_dict(ace.get("configuration"))
+
+    def read(key: str) -> Optional[int]:
+        return _optional_int(_first_value(ace, key, default=nested.get(key)))
+
+    return {
+        "ace_config_version": read("ace_config_version"),
+        "extruder_sensor_debounce_count": read(
+            "extruder_sensor_debounce_count"),
+        "toolhead_sensor_debounce_count": read(
+            "toolhead_sensor_debounce_count"),
+        "toolchange_feed_hard_limit": read("toolchange_feed_hard_limit"),
+        "toolchange_retract_hard_limit": read(
+            "toolchange_retract_hard_limit"),
+    }
+
+
 def normalize_status(
     ace: Mapping[str, Any],
     variables: Mapping[str, Any],
@@ -267,6 +294,7 @@ def normalize_status(
     slots = _parse_inventory(variables.get("ace_inventory"))
     material_profiles = _normalize_material_profiles(
         ace.get("material_profiles"))
+    configuration = _normalize_configuration(ace)
 
     hardware_slots = ace.get("slots")
     if isinstance(hardware_slots, list):
@@ -304,13 +332,16 @@ def normalize_status(
     elif connection_state != "connected":
         warnings.append("ACE 连接中断，未自动重放物理动作")
     last_error = str(toolchange.get("last_error") or "").strip()
-    if last_error and last_error not in warnings:
+    toolchange_active = _safe_bool(toolchange.get("active"))
+    if (toolchange_active or recovery_required) and last_error and last_error not in warnings:
         warnings.append(last_error)
     return {
         "api_version": 1,
         "driver": DRIVER_ID,
         "compatible_driver_ids": [DRIVER_ID] + LEGACY_DRIVER_IDS,
         "driver_version": str(ace.get("driver_version") or "unknown"),
+        **configuration,
+        "configuration": configuration,
         "connected": connected,
         "connection_state": connection_state,
         "connection": connection,
@@ -344,7 +375,7 @@ def normalize_status(
         },
         "printing": bool(printing),
         "toolchange": {
-            "active": _safe_bool(toolchange.get("active")),
+            "active": toolchange_active,
             "context": _as_dict(toolchange.get("context")),
             "last_error": last_error,
             "recovery_required": recovery_required,
@@ -584,7 +615,9 @@ class AceStatus:
         lower = _as_dict(data.get(f"filament_switch_sensor {self.lower_sensor_name}"))
         print_stats = _as_dict(data.get("print_stats"))
         idle_timeout = _as_dict(data.get("idle_timeout"))
-        printing = str(print_stats.get("state") or "").lower() == "printing" or str(idle_timeout.get("state") or "").lower() == "printing"
+        print_state = str(print_stats.get("state") or "").lower()
+        idle_state = str(idle_timeout.get("state") or "").lower()
+        printing = print_state in ("printing", "paused") or idle_state in ("printing", "paused")
         return normalize_status(
             _as_dict(data.get("ace")),
             variables,

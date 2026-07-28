@@ -413,6 +413,46 @@ body {
     cursor: not-allowed;
 }
 
+.calibration-blocked-reason {
+    flex: 1 0 100%;
+    color: #fbbf24;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.configuration-diagnostics {
+    margin-top: 12px;
+    border-top: 1px solid #2c323c;
+    padding-top: 10px;
+}
+
+.configuration-diagnostics summary {
+    color: #cfd4dc;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.configuration-diagnostics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 6px 12px;
+    margin-top: 8px;
+}
+
+.configuration-diagnostic-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: #9ba4b1;
+    font-size: 12px;
+}
+
+.configuration-diagnostic-item strong {
+    color: #e6e9ed;
+    font-weight: 600;
+}
+
 .btn-primary {
     background: #2563eb;
     color: white;

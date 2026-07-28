@@ -17,6 +17,19 @@
 
 ![ACE Pro 卡片在 Fluidd 仪表盘中的完整视图](docs/images/acepro-fluidd-dashboard-overview.png)
 
+## 当前开发分支安全更新（未发布）
+
+- `ace_config_version` 为配置结构提供兼容标识；缺少该键的旧配置按兼容模式加载，
+  不要求为了升级而直接覆盖现有 `ace.cfg`。
+- 上方与下方传感器分别使用 `extruder_sensor_debounce_count` 和
+  `toolhead_sensor_debounce_count` 独立消抖，送料停止与工具头到达判定不再共用
+  断料或五通传感器的消抖配置。
+- `toolchange_feed_hard_limit` 和 `toolchange_retract_hard_limit` 为送料、补偿、回料
+  与相关恢复路径提供独立绝对边界；达到硬上限会停止换料、保留失败阶段并暂停
+  正在打印的任务，不会执行 `CANCEL_PRINT`。
+- 本轮只记录静态部署验证，不代表已经完成送料、回抽、切刀或完整换料的真机
+  动作测试。实际参数值以根目录 `ace.cfg` 为唯一来源。
+
 ## v1.2.0 重大更新
 
 - **统一产品**：驱动、Moonraker API、Fluidd 卡片和备用页统一为 Ace Pro Control Center。
@@ -31,7 +44,11 @@
 - **自动跟随打印烘干**：根据四槽材料决定安全温度，手动烘干始终保留用户所有权。
 - **材料资料**：材料名称、烘干温度和喷嘴参考温度由 `ace.cfg` 成组定义，卡片与备用页读取同一来源。
 
-完整能力和限制见 [功能与接口总览](docs/FEATURES.zh-CN.md)，参数与动作说明见 [驱动 v1.2.0 指南](docs/DRIVER-v1.2.0.zh-CN.md)。
+完整能力和限制见 [功能与接口总览](docs/FEATURES.zh-CN.md)，参数与动作说明见 [驱动 v1.2.0 指南](docs/DRIVER-v1.2.0.zh-CN.md)，配置分区和五星必填项见 [配置文件规范](docs/ACE_CONFIG_SPECIFICATION.zh-CN.md)。
+
+> 配置来源：仓库根目录 `ace.cfg` 是唯一可安装模板。配置规范只说明结构和
+> 安全规则，`docs/templates/ace-config-section.template.ini` 只供维护者编写未来
+> 功能区，二者都不能替代根模板或作为第二套机器参数来源。
 
 ## 兼容范围
 
@@ -128,8 +145,12 @@ nano ~/printer_data/config/ace.cfg
 | `toolhead_sensor_pin` | 挤出机下方传感器 MCU 引脚 |
 | `toolchange_load_length` | ACE 停放位置到上方传感器的最大送料距离 |
 | `toolchange_retract_length` | 足以把耗材退回 ACE 并释放公共通道的回抽总距离 |
+| `toolchange_feed_hard_limit` | 送料及补偿允许达到的绝对总上限，不能小于正常送料需求 |
+| `toolchange_retract_hard_limit` | 回料及相关恢复路径允许达到的绝对总上限 |
 | `bowden_tube_length` | ACE 出料口到五通进料口的实际 PTFE 长度 |
 | `toolhead_sensor_to_nozzle` | 下方传感器到喷嘴的耗材路径长度 |
+| `extruder_sensor_debounce_count` | 上方传感器到达/解除的独立连续确认次数 |
+| `toolhead_sensor_debounce_count` | 下方传感器到达/解除的独立连续确认次数 |
 | `parking_sensor_pin` | 可选五通传感器引脚；没有传感器时保持注释 |
 | `parking_sensor_clear_move_length` | 五通传感器解除后继续向 ACE 回抽的总距离 |
 | `CUT_TIP` | 本机切刀坐标和动作；模板默认注释，不能照抄其他机器 |
@@ -171,6 +192,9 @@ http://打印机IP:7125/server/ace/status
 ```
 
 先确认 Fluidd、Moonraker API、ACE 连接和两个传感器状态正常，再由现场用户执行短距离送料、回抽、切刀空载检查和完整换料。安装器不会替用户触发这些动作。
+
+当前开发分支的配置版本、独立消抖和绝对硬上限只完成静态部署验证；在现场用户
+明确开始动作测试前，不应把“服务正常、配置可解析”描述为机械功能已经验证。
 
 完整逐步教程见 [安装、配置、验证、升级、回滚、卸载与排障](docs/INSTALL.zh-CN.md)。
 
@@ -310,6 +334,8 @@ sh ui-installer.sh --uninstall-card
 - [从零安装、升级、回滚、卸载与排障](docs/INSTALL.zh-CN.md)
 - [完整功能和接口边界](docs/FEATURES.zh-CN.md)
 - [驱动 v1.2.0 参数与调校](docs/DRIVER-v1.2.0.zh-CN.md)
+- [ACE 配置文件规范](docs/ACE_CONFIG_SPECIFICATION.zh-CN.md)
+- [ACE 配置功能区编写模板](docs/templates/ace-config-section.template.ini)
 - [自动跟随打印烘干流程](docs/AUTO_DRYING_FLOW.zh-CN.md)
 - [项目记忆与当前状态](docs/PROJECT_MEMORY.zh-CN.md)
 - [产品决策记录](docs/DECISIONS.zh-CN.md)

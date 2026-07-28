@@ -89,9 +89,13 @@ export default class AceProMixin extends StateMixin {
   }
 
   get aceProBusy (): boolean {
-    return this.aceProHasWait([WAIT_REFRESH, WAIT_SLOT_ACTION, WAIT_DRYER_ACTION, WAIT_QUICK_ACTION]) ||
+    return this.aceProState.stale ||
+      this.aceProHasWait([WAIT_REFRESH, WAIT_SLOT_ACTION, WAIT_DRYER_ACTION, WAIT_QUICK_ACTION]) ||
       this.aceProState.endlessSpool.inProgress ||
-      this.aceProStatus === 'busy'
+      this.aceProStatus === 'busy' ||
+      this.aceProState.toolchange.active ||
+      this.aceProState.toolchange.recoveryRequired ||
+      this.aceProState.motionOwner.length > 0
   }
 
   get aceProToolchangeActive (): boolean {
@@ -107,8 +111,68 @@ export default class AceProMixin extends StateMixin {
   }
 
   get aceProMotionControlsDisabled (): boolean {
-    return !this.aceProConnected || this.aceProPrinting || this.aceProBusy ||
+    return this.aceProMotionBlockReason !== ''
+  }
+
+  get aceProMotionBlockReason (): string {
+    if (!this.aceProConnected) return 'ACE 未连接'
+    if (this.aceProState.stale) return '状态已过期，等待刷新'
+    if (this.aceProPrinting) return '打印或暂停期间不可操作'
+    if (this.aceProState.toolchange.recoveryRequired) return '换料恢复尚未完成'
+    if (this.aceProState.toolchange.active) return '换料动作正在执行'
+    if (this.aceProState.motionOwner.length > 0) {
+      return `动作锁：${this.aceProState.motionOwner}`
+    }
+    if (this.aceProHasWait([WAIT_REFRESH, WAIT_SLOT_ACTION, WAIT_DRYER_ACTION, WAIT_QUICK_ACTION])) {
+      return '操作请求正在执行'
+    }
+    if (this.aceProState.endlessSpool.inProgress) return '无限续料动作正在执行'
+    if (this.aceProStatus === 'busy') return 'ACE 正忙'
+    return ''
+  }
+
+  get aceProCalibrationBlockReason (): string {
+    if (this.aceProMotionBlockReason) return this.aceProMotionBlockReason
+    const sensors = this.aceProState.sensors
+    const unavailable = []
+    if (!sensors.upper.available) unavailable.push('上方传感器')
+    if (!sensors.lower.available) unavailable.push('下方传感器')
+    if (unavailable.length > 0) return `传感器不可用：${unavailable.join('、')}`
+
+    const detected = []
+    if (sensors.upper.detected) detected.push('上方传感器')
+    if (sensors.lower.detected) detected.push('下方传感器')
+    if (sensors.parking.available && sensors.parking.detected) detected.push('五通传感器')
+    if (detected.length > 0) return `仍检测到耗材：${detected.join('、')}`
+    return ''
+  }
+
+  get aceProConfigurationDiagnostics (): Array<{ label: string; value: string }> {
+    const configuration = this.aceProState.configuration
+    const value = (raw: number | null, suffix = '') => raw == null ? '未报告' : `${raw}${suffix}`
+    return [
+      { label: '配置版本', value: value(configuration.aceConfigVersion, '') },
+      { label: '上方传感器消抖', value: value(configuration.extruderSensorDebounceCount, ' 次') },
+      { label: '下方传感器消抖', value: value(configuration.toolheadSensorDebounceCount, ' 次') },
+      { label: '送料绝对上限', value: value(configuration.toolchangeFeedHardLimit, ' mm') },
+      { label: '回料绝对上限', value: value(configuration.toolchangeRetractHardLimit, ' mm') },
+    ]
+  }
+
+  get aceProActiveWarnings (): string[] {
+    const historicalError = this.aceProState.toolchange.lastError
+    if (!historicalError || this.aceProState.toolchange.active || this.aceProState.toolchange.recoveryRequired) {
+      return this.aceProState.warnings
+    }
+    return this.aceProState.warnings.filter(warning => warning !== historicalError)
+  }
+
+  get aceProFaultControlLabel (): string {
+    return this.aceProState.toolchange.active ||
+      this.aceProState.toolchange.recoveryRequired ||
       this.aceProState.motionOwner.length > 0
+      ? '紧急停止'
+      : '清除故障'
   }
 
   get aceProCalibrationStatusLabel (): string {

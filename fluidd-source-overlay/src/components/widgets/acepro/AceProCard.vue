@@ -392,12 +392,19 @@
               </app-btn>
               <app-btn
                 small
-                :disabled="aceProMotionControlsDisabled || !calibrationSensorsClear"
+                :disabled="aceProCalibrationBlockReason !== ''"
                 :loading="aceProHasWait(aceProWaitQuickAction)"
                 @click="calibrate(calibrationSlot)"
               >
                 自动探测料管长度
               </app-btn>
+              <span
+                v-if="aceProCalibrationBlockReason"
+                class="acepro-calibration__blocked-reason"
+                role="status"
+              >
+                {{ aceProCalibrationBlockReason }}
+              </span>
               <app-btn
                 small
                 :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanSave"
@@ -430,7 +437,7 @@
                 :loading="aceProHasWait(aceProWaitQuickAction)"
                 @click="abortToolchange"
               >
-                紧急停止
+                {{ aceProFaultControlLabel }}
               </app-btn>
             </div>
             <div
@@ -559,13 +566,13 @@
       </v-expand-transition>
 
       <v-alert
-        v-if="aceProLastError || aceProState.warnings.length"
+        v-if="aceProLastError || aceProActiveWarnings.length"
         dense
         outlined
         type="warning"
         class="acepro-card__warning"
       >
-        {{ aceProLastError || aceProState.warnings.join('；') }}
+        {{ aceProLastError || aceProActiveWarnings.join('；') }}
       </v-alert>
     </v-card-text>
 
@@ -1183,6 +1190,13 @@ export default class AceProCard extends Mixins(AceProMixin) {
   margin-top: 4px;
   color: #fca5a5;
   font-size: 10px;
+}
+
+.acepro-calibration__blocked-reason {
+  grid-column: 1 / -1;
+  color: #fbbf24;
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .acepro-manual-controls ::v-deep .v-input__slot {

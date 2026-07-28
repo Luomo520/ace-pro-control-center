@@ -86,3 +86,51 @@ test('standalone status and calibration panels remain compact in the dark theme'
   assert.match(html, /五通后传感器/)
   assert.doesNotMatch(html, /deviceInfo\.rfid/)
 })
+
+
+test('standalone calibration exposes safe lock reasons and replaces fresh critical state', async () => {
+  const [html, source] = await Promise.all([
+    readFile('ace_status_integration/web/ace.html', 'utf8'),
+    readFile('ace_status_integration/web/ace-dashboard.js', 'utf8'),
+  ])
+
+  assert.match(html, /calibrationBlockReason\(\)/)
+  assert.match(html, /清除故障/)
+  assert.match(source, /statusStale/)
+  assert.match(source, /toolchange\.recovery_required/)
+  assert.match(source, /状态已过期，等待刷新/)
+  assert.match(source, /仍检测到耗材/)
+  assert.match(source, /updateStatus\(statusData, true\)/)
+  assert.match(source, /replaceCriticalState/)
+})
+
+
+test('configuration diagnostics stay read-only and preserve missing values', async () => {
+  const [html, source, types, adapter, mixin] = await Promise.all([
+    readFile('ace_status_integration/web/ace.html', 'utf8'),
+    readFile('ace_status_integration/web/ace-dashboard.js', 'utf8'),
+    readFile('fluidd-source-overlay/src/types/acePro.ts', 'utf8'),
+    readFile('fluidd-source-overlay/src/util/acepro.ts', 'utf8'),
+    readFile('fluidd-source-overlay/src/mixins/acePro.ts', 'utf8'),
+  ])
+
+  const fields = [
+    'ace_config_version',
+    'extruder_sensor_debounce_count',
+    'toolhead_sensor_debounce_count',
+    'toolchange_feed_hard_limit',
+    'toolchange_retract_hard_limit',
+  ]
+  for (const field of fields) {
+    assert.match(source, new RegExp(field))
+    assert.match(adapter, new RegExp(field))
+  }
+
+  assert.match(html, /驱动配置诊断/)
+  assert.match(html, /configurationDiagnostics\(\)/)
+  assert.match(source, /value === null \? '未报告'/)
+  assert.match(types, /AceProConfigurationState/)
+  assert.match(adapter, /fallback\?\.configuration/)
+  assert.match(mixin, /aceProConfigurationDiagnostics/)
+  assert.doesNotMatch(html, /ACE_SET_CONFIG|保存驱动配置/)
+})

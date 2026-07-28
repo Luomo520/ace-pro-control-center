@@ -165,3 +165,23 @@ test('Fluidd sends explicit confirmation for every direct filament movement', as
   assert.ok(unload)
   assert.match(unload[1], /this\.\$confirm/)
 })
+
+
+test('Fluidd calibration distinguishes stale history from active operation locks', async () => {
+  const [card, mixin, util, types] = await Promise.all([
+    readFile('fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue', 'utf8'),
+    readFile('fluidd-source-overlay/src/mixins/acePro.ts', 'utf8'),
+    readFile('fluidd-source-overlay/src/util/acepro.ts', 'utf8'),
+    readFile('fluidd-source-overlay/src/types/acePro.ts', 'utf8'),
+  ])
+
+  assert.match(types, /stale:\s*boolean/)
+  assert.match(util, /\['printing', 'paused'\]/)
+  assert.match(mixin, /aceProState\.toolchange\.active/)
+  assert.match(mixin, /aceProState\.toolchange\.recoveryRequired/)
+  assert.match(mixin, /状态已过期，等待刷新/)
+  assert.match(mixin, /仍检测到耗材/)
+  assert.match(card, /aceProCalibrationBlockReason/)
+  assert.match(card, /aceProFaultControlLabel/)
+  assert.doesNotMatch(card, /上次换料错误：/)
+})

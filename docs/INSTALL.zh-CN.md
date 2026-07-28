@@ -412,7 +412,29 @@ material_1_temperature: 210
 
 默认 `_ACE_PRE_TOOLCHANGE` 和 `_ACE_POST_TOOLCHANGE` 只输出提示，不归零、不移动、不加热。
 
-### 7.6 检查 include 和 Moonraker 配置
+### 7.6 配置版本、传感器消抖和绝对硬上限
+
+新版 `[ace]` 正式支持以下配置契约：
+
+| 参数 | 作用 | 填写原则 |
+| --- | --- | --- |
+| `ace_config_version` | 标识配置结构，供驱动选择兼容解析路径 | 使用根 `ace.cfg` 中的当前值，不自行猜测或递增 |
+| `extruder_sensor_debounce_count` | 上方传感器触发与解除的独立连续确认次数 | 按上方微动稳定性调整，不与下方或断料消抖共用 |
+| `toolhead_sensor_debounce_count` | 下方传感器触发与解除的独立连续确认次数 | 按下方微动稳定性调整，不与上方或断料消抖共用 |
+| `toolchange_feed_hard_limit` | 送料、接近和有限补偿允许达到的绝对累计上限 | 必须覆盖正常路径和合理补偿，但不能用过大值掩盖打滑或传感器故障 |
+| `toolchange_retract_hard_limit` | 回料及相关恢复路径允许达到的绝对累计上限 | 必须覆盖正常回料路径，同时限制持续空转和过度回抽 |
+
+`toolchange_load_length`、`feed_slip_compensation_length` 和
+`toolchange_retract_length` 仍描述正常动作及有限补偿；两个 `*_hard_limit` 是任何正常
+长度、补偿或恢复请求都不能越过的最后边界。达到硬上限时驱动停止本次换料并暂停
+正在打印的任务，不执行 `CANCEL_PRINT`。
+
+旧配置缺少这些新键时仍按驱动兼容路径加载，不要求为了升级强制覆盖现有
+`ace.cfg`。建议对照根 `ace.cfg` 的当前注释逐项补齐，以便显式记录配置版本、两只
+传感器的独立消抖和本机绝对边界。不要从本文复制一套默认数值；根 `ace.cfg` 是唯一
+可安装模板和发布值来源。
+
+### 7.7 检查 include 和 Moonraker 配置
 
 ```bash
 grep -n '^\[include ace\.cfg\]' ~/printer_data/config/printer.cfg
@@ -441,6 +463,8 @@ test -L ~/klipper/klippy/extras/ace.py && \
 test -f ~/moonraker/moonraker/components/ace_status.py
 grep -Rni --include='*.cfg' '^\[ace\]' ~/printer_data/config
 grep -Rni --include='*.cfg' '^\[save_variables\]' ~/printer_data/config
+grep -nE '^(ace_config_version|extruder_sensor_debounce_count|toolhead_sensor_debounce_count|toolchange_feed_hard_limit|toolchange_retract_hard_limit):' \
+  ~/printer_data/config/ace.cfg
 ```
 
 确认：
@@ -450,7 +474,12 @@ grep -Rni --include='*.cfg' '^\[save_variables\]' ~/printer_data/config
 - 只有一个 `[ace]`。
 - 只有一份 `[save_variables]`。
 - 上下传感器引脚不再是模板占位符。
+- 新配置应能查到配置版本、两个独立消抖项和两个绝对硬上限；旧配置缺失时应由
+  驱动兼容加载，而不是出现未知选项或缺少选项错误。
 - 切刀宏仍保持注释，或已经按本机验证。
+
+本轮对上述新契约只做配置解析、服务、API 和状态等静态部署验证。未执行送料、
+回抽、切刀、自动探测或完整换料，因此静态验证通过不代表机械参数已经适合本机。
 
 ## 9. 安全重启与无动作验证
 
@@ -894,7 +923,20 @@ curl -fsS http://127.0.0.1:7125/server/ace/capabilities
 
 结果过期时核对管路、五通传感器和停放参数，确认上下传感器无料后重新探测并保存。
 
-### 13.20 PolicyKit 警告
+### 13.20 送料或回料达到绝对硬上限
+
+先保留暂停状态并查看控制台报告的失败阶段。依次检查传感器是否触发、料路是否
+堵塞、齿轮是否打滑，以及正常长度和硬上限之间是否留有合理余量。不要仅通过不断
+增大硬上限继续尝试。
+
+- 送料侧核对 `toolchange_load_length`、`feed_slip_compensation_length` 和
+  `toolchange_feed_hard_limit`。
+- 回料侧核对 `toolchange_retract_length`、停放/恢复路径和
+  `toolchange_retract_hard_limit`。
+- 上下传感器反复跳变时，分别检查对应引脚、电平和独立消抖项。
+- 硬上限失败应暂停当前打印并保留恢复条件，不应出现 `CANCEL_PRINT`。
+
+### 13.21 PolicyKit 警告
 
 PolicyKit 警告会禁用 Moonraker 的服务重启、关机、重启或更新管理权限，但不等于 ACE 驱动本身加载失败。按 Moonraker 官方 PolicyKit 安装说明修复；在此之前使用 SSH 和 `sudo systemctl` 管理服务。
 

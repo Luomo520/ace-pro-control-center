@@ -83,9 +83,13 @@ parameter_name: value
 
 ### 二、ACE 核心连接配置
 
+- `ace_config_version`
 - `serial`
 - `baud`
 - `enable_debug_rpc`
+
+`ace_config_version` 用于识别配置结构。缺少该键的旧配置按驱动兼容路径加载；文档
+不得自行维护版本默认值，当前值只从根 `ace.cfg` 读取。
 
 `enable_debug_rpc` 日常必须为 `False`。只有协议开发或故障排查时才允许开启原始 RPC 调试入口。
 
@@ -98,21 +102,52 @@ parameter_name: value
 - `toolhead_sensor_to_nozzle`：下方传感器到喷嘴的耗材路径长度。
 - `bowden_tube_length`：ACE 出料口到五通进料口的 PTFE 管长度。
 
-### 四、五通传感器与五通停放
+### 四、五通传感器与自动探测料管长度
 
 - `parking_sensor_pin`
 - `parking_sensor_position`
 - `parking_sensor_clear_move_length`
 - `parking_sensor_debounce_count`
 - `five_way_parking_margin`
+- `calibration_max_retract_length`
+- `calibration_speed`
+- `calibration_feed_speed`
+- `calibration_retract_speed`
+- `calibration_chunk_length`
+- `calibration_final_chunk_length`
+
+配置文件中该区域必须包含路径字符块，并明确展示探测相对于五通、五通传感器、上方传感器和 ACE 内部停放点的方向：
+
+```text
++-----------------------------------------------------------------------+
+| 送料方向（回抽方向与箭头相反）：                                      |
+| [ACE 内部停放点] -> [ACE 出料口] -> [五通前传感器（可选）]            |
+| -> [五通] -> [五通后传感器（可选）] -> [上方传感器]                   |
+| -> [挤出机齿轮] -> [下方传感器] -> [喷嘴]                             |
+| 五通前/后传感器只配置其中一个：before_five_way 或 after_five_way。    |
+| 传感器触发/解除后，再按 parking_sensor_clear_move_length 定位停放点。 |
++-----------------------------------------------------------------------+
+```
+
+整段说明必须明确：该区域共同管理五通传感器、五通停放位置和自动探测；通用路径同时画出五通前、五通后两个候选传感器位置，但实际配置只允许通过 `parking_sensor_position` 选择其中一个。送料沿箭头移动，回抽沿箭头反方向移动；传感器触发或解除后，再按 `parking_sensor_clear_move_length` 定位停放点。未启用五通传感器时使用管路长度和停放余量兼容探测；探测前仍需确认耗材路径安全。所有 `calibration_*` 参数只影响自动探测，不得改变普通换料、手动送料或手动回料。
 
 规则：
 
 - `parking_sensor_pin` 注释表示不启用五通传感器。
 - `after_five_way` 表示传感器位于五通之后、靠挤出机一侧。
 - `before_five_way` 表示传感器位于五通之前、靠 ACE 一侧。
+- `before_five_way` 与 `after_five_way` 是同一个五通传感器的二选一安装位置，不能同时配置两个传感器。
+- 送料沿字符图箭头移动，回抽反向移动；传感器触发或解除后，再按 `parking_sensor_clear_move_length` 定位停放点。
 - `parking_sensor_clear_move_length` 已包含安全余量时，不再叠加 `five_way_parking_margin`。
 - 通用模板不得出现 `^PC0` 等真实引脚。
+- `calibration_speed` 是送料和回抽的通用速度，单位为 `mm/s`，默认 `25`。
+- `calibration_feed_speed` 与 `calibration_retract_speed` 默认保持注释，示例值均为 `25 mm/s`；取消注释后只覆盖对应方向的 `calibration_speed`。
+- `calibration_chunk_length` 是主体粗测分段，单位为 `mm`，默认 `50`；增大可减少启停，减小可提高定位粒度。
+- `calibration_final_chunk_length` 是接近目标位置时的末段分段，单位为 `mm`，默认 `50`，独立于粗测分段。
+- 每个探测参数前必须分别说明用途、单位、填写方法、默认值和覆盖关系，不能只用一段共用短注释代替。
+- 启用五通传感器时，结果显示上方传感器到五通传感器、上方传感器到五通停放点。
+- 未启用五通传感器时，结果显示上方传感器到内部停放点。
+- 所有探测结果使用 `mm`；执行送料或回料动作前必须由用户确认。
 
 ### 五、高速送料与接近传感器送料
 
@@ -125,13 +160,17 @@ parameter_name: value
 - `feed_slip_compensation_length`
 - `feed_slip_compensation_chunk`
 - `feed_slip_compensation_speed`
+- `toolchange_feed_hard_limit`
 
 说明重点：
 
 - `False` 连续送料用于取消每 100 mm 的停顿。
 - 快速阶段接近预计触发位置后切换到慢速。
 - 正常送料结束仍未触发上方传感器时，才进入有限打滑补偿。
-- 达到送料上限后必须暂停并报告，不允许无限磨料。
+- `toolchange_load_length` 和补偿长度描述正常动作，
+  `toolchange_feed_hard_limit` 是所有送料、接近和补偿请求的绝对累计上限。
+- 达到绝对硬上限后必须停止换料、暂停并报告，不允许无限磨料，也不得执行
+  `CANCEL_PRINT`。
 
 ### 六、回料速度与断续回抽
 
@@ -140,8 +179,11 @@ parameter_name: value
 - `retract_parking_speed`
 - `retract_parking_length`
 - `intermittent_retract`
+- `toolchange_retract_hard_limit`
 
 `False` 表示快速回料段和慢速停放段各发送一次连续请求；不能解释为取消末端慢速保护。
+`toolchange_retract_length` 描述正常回料目标，`toolchange_retract_hard_limit` 是正常回料
+和相关恢复都不能越过的绝对累计上限；越界时停止换料并暂停，不取消打印任务。
 
 ### 七、挤出机送料与下方传感器
 
@@ -153,8 +195,12 @@ parameter_name: value
 - `toolhead_to_nozzle_speed`
 - `toolhead_sensor_max_feed_length`
 - `extruder_sensor_timeout`
+- `extruder_sensor_debounce_count`
+- `toolhead_sensor_debounce_count`
 
 这一组控制上方传感器触发后，由挤出机把耗材送到下方传感器，再送到喷嘴的过程。
+上下传感器必须分别使用自己的连续确认次数；这两个参数不能与
+`parking_sensor_debounce_count` 或 `runout_debounce_count` 共用。
 
 ### 八、ACE 通信与断联保护
 
@@ -175,30 +221,13 @@ parameter_name: value
 - 自动恢复必须以传感器状态和已确认阶段为依据。
 - 打印过程中的恢复应尽量自动完成，无法确认安全状态时暂停打印。
 
-### 九、自动探测料管长度
-
-- `calibration_max_retract_length`
-- `calibration_feed_speed`
-- `calibration_retract_speed`
-- `calibration_chunk_length`
-- `calibration_final_chunk_length`
-
-默认采用高速粗测：送料 160 mm/s、回抽 120 mm/s、粗测和末段均为 100 mm。旧 `calibration_speed` 仅用于兼容已有配置；新模板不再使用该条目。粗测结果允许约 `±100 mm` 误差，以减少短距离启停、重复等待、料盘转动和耗材弹性造成的放大误差。
-
-界面完成后应按模式显示：
-
-- 启用五通传感器：上方传感器到五通传感器、上方传感器到五通停放点。
-- 未启用五通传感器：上方传感器到内部停放点。
-- 所有结果使用 `mm`。
-- 执行送料或回料动作前必须由用户确认。
-
-### 十、烘干功能
+### 九、烘干功能
 
 - `max_dryer_temperature`
 
-材料实际烘干温度由第十二节材料档案决定，但不得超过该安全上限。
+材料实际烘干温度由第十一节材料档案决定，但不得超过该安全上限。
 
-### 十一、无限续料
+### 十、无限续料
 
 历史摘录缺失的完整内容如下：
 
@@ -217,7 +246,7 @@ endless_spool_require_same_material: True
 runout_debounce_count: 3
 ```
 
-### 十二、耗材名称、烘干温度和耗材温度
+### 十一、耗材名称、烘干温度和耗材温度
 
 历史摘录生成之后新增的完整配置如下。所有项目必须保留在 `[ace]` 内，不能创建无法被 Klipper 识别的独立 `[ace_materials]` 节。
 
@@ -264,7 +293,7 @@ show_material_warning: True
 - 未知材料使用 45°C，并提示烘干效果可能受限。
 - PLA 与其他材料混装时使用 50°C，提示其他材料烘干效果可能受限。
 
-### 十三、工具、换料和切刀宏
+### 十二、工具、换料和切刀宏
 
 通用安装模板：
 
@@ -285,55 +314,28 @@ show_material_warning: True
 - 换料前处理保存 `TOOLCHANGE` 状态、抬升 Z、移动到 `X289 Y350`，最低喷嘴温度为 240°C。
 - 换料后处理下降 Z、执行 `CLEAN_NOZZLE`，并按打印状态恢复位置。
 
-## 五、当前打印机必须保留的值
+## 五、参数值来源
 
-将当前打印机配置转换为详细样式时，以下值不能改成通用模板默认值：
+本文只保存结构、语义、注释格式和迁移规则，不保存当前打印机值，也不维护发布
+默认值副本。
 
-```ini
-serial: /dev/serial/by-id/usb-ANYCUBIC_ACE_1-if00
-baud: 115200
-enable_debug_rpc: False
-
-extruder_sensor_pin: ^TGL36:PA2
-toolhead_sensor_pin: ^TGL36:PA5
-parking_sensor_pin: ^PC0
-parking_sensor_position: after_five_way
-parking_sensor_clear_move_length: 75
-parking_sensor_debounce_count: 3
-five_way_parking_margin: 20
-
-toolchange_load_length: 1200
-toolchange_retract_length: 800
-toolhead_sensor_to_nozzle: 80
-bowden_tube_length: 190
-
-feed_speed: 80
-feed_fast_speed: 160
-feed_approach_speed: 25
-feed_approach_length: 200
-intermittent_feed: False
-feed_fast_chunk_length: 1000
-feed_slip_compensation_length: 400
-feed_slip_compensation_chunk: 50
-feed_slip_compensation_speed: 25
-
-retract_speed: 80
-retract_fast_speed: 120
-retract_parking_speed: 25
-retract_parking_length: 200
-intermittent_retract: False
-```
-
-其余通信、挤出机、自动探测、材料和无限续料参数也必须从当前生效配置读取，不能仅依赖本文示例。
+- 根目录 `ace.cfg` 是唯一可安装模板和发布默认值来源。
+- 当前打印机升级时，从实际生效的 `~/printer_data/config/ace.cfg` 保留本机串口、
+  引脚、距离、速度、硬上限和宏。
+- `docs/templates/ace-config-section.template.ini` 只用于编写未来功能区，不可安装。
+- 任何示例都不能覆盖已经实测的本机参数；新参数按驱动兼容规则迁移。
 
 ## 六、通用模板与本机配置的边界
 
 | 项目 | 通用安装模板 | 当前打印机升级 |
 | --- | --- | --- |
 | ACE 串口 | 使用项目确认的 by-id 路径或由向导确认 | 保留当前路径 |
-| 上方/下方传感器 | 注释占位，不预填 | 保留 `^TGL36:PA2`、`^TGL36:PA5` |
-| 五通传感器 | 注释占位，不预填 | 保留 `^PC0` |
+| 上方/下方传感器 | 注释占位，不预填 | 保留当前实际引脚 |
+| 五通传感器 | 注释占位，不预填 | 保留当前实际引脚和安装位置 |
 | 结构距离 | 明确要求实测 | 保留当前实测值 |
+| 配置版本 | 使用根 `ace.cfg` 当前值 | 旧配置缺失时允许兼容加载，再按教程补齐 |
+| 独立消抖 | 使用根 `ace.cfg` 当前值 | 分别按上下传感器稳定性调整 |
+| 送料/回料硬上限 | 使用根 `ace.cfg` 当前值 | 保留或重新核对本机绝对边界，不从本文复制数值 |
 | 切刀宏 | 注释示例 | 保留当前实际宏 |
 | 换料前后处理 | 无运动安全提示宏 | 保留当前实际宏 |
 | 材料档案 | 提供安全默认值 | 保留当前值 |
@@ -342,8 +344,10 @@ intermittent_retract: False
 
 仅调整注释和顺序时，必须执行以下审计：
 
-1. 迁移前后 `[ace]` 活跃参数键集合完全一致。
-2. 当前 79 个参数值逐项一致。
+1. 仅重排注释时，迁移前后 `[ace]` 活跃参数键集合完全一致；正式新增配置契约时，
+   差异只能包含工作单批准的新键。
+2. 所有既有活动参数值逐项一致；新增参数值必须来自根 `ace.cfg` 或明确的旧配置
+   兼容迁移，不以固定参数总数作为验收条件。
 3. `CUT_TIP` 起始的所有宏文本逐字一致。
 4. `[save_variables]`、`[respond]` 在活动 include 树中各只有一份。
 5. 文件使用 UTF-8 和 Linux LF。
@@ -352,21 +356,18 @@ intermittent_retract: False
 8. 检查启动日志无无效选项、重复节、配置解析错误或 MCU shutdown。
 9. 不使用送料、回料、切刀、加热或自动探测作为安装验证动作。
 10. 所有远程写入必须遵守项目的变更前和变更后备份规则。
+11. `ace_config_version`、上下传感器独立消抖和送料/回料绝对硬上限至少完成配置
+    解析、服务/API/状态静态验证；物理动作验证必须单独记录。
 
 ## 八、参数完整性清单
 
-最终 `[ace]` 配置必须包含 79 个活动参数：
+长期文档不固定活动参数数量。完整性按配置契约检查：
 
-- 核心连接：3 个。
-- 机器结构：6 个。
-- 五通传感器：5 个。
-- 送料：9 个。
-- 回料：5 个。
-- 挤出机与下方传感器：8 个。
-- 通信与断联保护：10 个。
-- 自动探测料管长度：4 个。
-- 烘干上限：1 个。
-- 无限续料：3 个。
-- 材料档案：25 个。
+- 活动键在 `[ace]` 内唯一，材料档案也必须位于 `[ace]`。
+- `ace_config_version`、上下传感器独立消抖和送料/回料绝对硬上限与驱动解析一致。
+- 必填项、默认项和条件项位于正确功能区，`☆☆☆☆☆` 标记完整。
+- 旧配置缺少新键时能够按兼容路径加载；新模板显式提供当前契约。
+- 硬上限失败停止换料并暂停，不调用 `CANCEL_PRINT`。
 
-任何后续新增参数都必须同步更新本清单、详细注释版配置、安装模板和配置布局测试。
+任何后续新增参数都必须同步驱动、根 `ace.cfg`、配置规范和测试；参数或派生状态
+对外暴露时，还必须同步 Moonraker、Fluidd、备用页和相关文档。

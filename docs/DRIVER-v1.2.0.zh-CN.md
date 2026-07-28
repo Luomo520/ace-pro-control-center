@@ -80,6 +80,24 @@
 
 USB 断联优先检查 by-id 路径、数据线、插口、供电和内核日志，不要只增加超时。
 
+### 5.1 配置兼容与安全边界契约
+
+| 参数 | 契约 |
+| --- | --- |
+| `ace_config_version` | 标识配置结构；缺失时按旧配置兼容路径加载 |
+| `extruder_sensor_debounce_count` | 只控制上方传感器触发和解除的连续确认 |
+| `toolhead_sensor_debounce_count` | 只控制下方传感器触发和解除的连续确认 |
+| `toolchange_feed_hard_limit` | 限制送料、接近和补偿请求的绝对累计距离 |
+| `toolchange_retract_hard_limit` | 限制回料及相关恢复请求的绝对累计距离 |
+
+旧 `ace.cfg` 未填写这些键时继续使用驱动兼容默认值或由既有长度派生的兼容边界，
+不会仅因升级而拒绝启动。新配置的具体值以根 `ace.cfg` 为唯一来源；本文不维护第二套
+默认值。
+
+两个硬上限不是正常送料/回料目标。正常长度和有限补偿决定预期动作，硬上限只负责
+阻止任何路径继续累计越界。达到上限时停止换料、报告阶段并暂停正在打印的任务，
+不得调用 `CANCEL_PRINT`。
+
 ## 6. 连续送料参数
 
 | 参数 | 默认值 | 作用 |
@@ -94,6 +112,7 @@ USB 断联优先检查 by-id 路径、数据线、插口、供电和内核日志
 | `feed_slip_compensation_chunk` | 50 mm | 只在断续模式中限制补偿单次长度 |
 | `feed_slip_compensation_speed` | 25 mm/s | 打滑补偿低速 |
 | `ace_motion_chunk_length` | 100 mm | 慢速/兼容分段动作默认分段；主送料连续模式不使用 |
+| `toolchange_feed_hard_limit` | 见根 `ace.cfg` | 正常送料、接近和补偿均不能越过的绝对累计上限 |
 
 ### 6.1 连续模式流程
 
@@ -130,6 +149,7 @@ flowchart LR
 | `retract_parking_length` | 200 mm | 总回抽最后 200 mm 使用慢速 |
 | `intermittent_retract` | `False` | `False` 两段连续请求；`True` 固定长度分段 |
 | `toolchange_retract_length` | 1200 mm | 完整换料总回抽距离 |
+| `toolchange_retract_hard_limit` | 见根 `ace.cfg` | 正常回料和相关恢复均不能越过的绝对累计上限 |
 
 默认模式只发送一次快速段和一次慢速停放段，不按 100 mm 反复停顿。
 
@@ -153,8 +173,10 @@ flowchart LR
 | `toolhead_to_nozzle_speed` | 5 mm/s | 下方触发后到喷嘴的速度 |
 | `toolhead_sensor_to_nozzle` | 80 mm | 下方传感器到喷嘴的距离 |
 | `extruder_sensor_timeout` | 15 s | 传感器相关等待上限 |
+| `extruder_sensor_debounce_count` | 见根 `ace.cfg` | 上方传感器独立连续确认次数 |
+| `toolhead_sensor_debounce_count` | 见根 `ace.cfg` | 下方传感器独立连续确认次数 |
 
-上方触发后下方不触发时，检查挤出齿轮是否真正转动、耗材是否进入齿轮、下方传感器方向和最大送料上限。不要把 `toolhead_sensor_max_feed_length` 无限制调大。
+上方触发后下方不触发时，检查挤出齿轮是否真正转动、耗材是否进入齿轮、下方传感器方向和最大送料上限。上下传感器分别使用自己的消抖次数，不能用一个传感器的参数掩盖另一个传感器的抖动。不要把 `toolhead_sensor_max_feed_length` 无限制调大。
 
 ## 9. 五通传感器与自动探测参数
 
@@ -166,14 +188,17 @@ flowchart LR
 | `parking_sensor_debounce_count` | 3 | 连续目标状态次数，降低微动抖动误停 |
 | `five_way_parking_margin` | 20 mm | 只用于无五通传感器的兼容估算路径 |
 | `calibration_max_retract_length` | 1500 mm | 搜索五通传感器解除状态的回抽上限 |
-| `calibration_feed_speed` | 160 mm/s | 自动探测送料速度，触发上方传感器后立即请求停止 |
-| `calibration_retract_speed` | 120 mm/s | 自动探测回抽速度 |
-| `calibration_chunk_length` | 100 mm | 粗测分段，结果允许约一个分段范围的误差 |
-| `calibration_final_chunk_length` | 100 mm | 接近估算停放点时的末段长度，不再追求毫米级精测 |
+| `calibration_speed` | 25 mm/s | 自动探测送料和回抽的共用默认速度 |
+| `calibration_feed_speed` | 未配置 | 可选送料速度覆盖项 |
+| `calibration_retract_speed` | 未配置 | 可选回抽速度覆盖项 |
+| `calibration_chunk_length` | 50 mm | 粗测分段，结果允许约一个分段范围的误差 |
+| `calibration_final_chunk_length` | 50 mm | 接近估算停放点时的末段长度，不再追求毫米级精测 |
 
 `parking_sensor_clear_move_length` 已包含用户希望保留的距离和安全余量，不再叠加 `five_way_parking_margin`。
 
-旧配置中的 `calibration_speed` 仍可读取，并在未填写两个独立速度时同时作为送料和回抽速度。新配置应优先使用独立速度。粗测分段的目的是减少频繁启停、ACE 就绪等待，以及料盘转动和耗材弹性对小步测量的放大；默认精度目标约为 `±100 mm`，不适合当作毫米级机械标定值。
+`calibration_speed` 默认同时控制送料和回抽；需要分别调节时，才在 `[ace]` 中取消注释 `calibration_feed_speed` 或 `calibration_retract_speed`。粗测分段的目的是减少频繁启停、ACE 就绪等待，以及料盘转动和耗材弹性对小步测量的放大；默认精度目标约为 `±50 mm`，不适合当作毫米级机械标定值。
+
+发布模板把上述五通传感器、停放距离和全部 `calibration_*` 参数放在同一区域，并用字符图展示五通前/后传感器二选一的完整路径。每个探测条目都独立说明用途、单位、填写方法和覆盖关系；这些参数只影响自动探测，不改变普通换料或手动送料/回料。
 
 ## 10. 自动探测料管长度
 
@@ -497,6 +522,12 @@ ACE_DISABLE_FEED_ASSIST INDEX=0
 | 重连后保持暂停 | 不确定切刀/回抽、传感器冲突、超过恢复重试上限 |
 | 探测结果过期 | Bowden、五通模式、停放距离或格式发生变化 |
 | 烘干温度不符 | 材料名称、混装规则、未知材料、`max_dryer_temperature` |
+| 送料失败后底部仍显示故障 | 更新 Moonraker 组件和 Fluidd 构建；已结束错误只保留为诊断历史 |
+| 自动探测按钮不可用 | 查看按钮旁原因；先处理断联、状态过期、暂停、动作锁或仍触发的传感器 |
+| 送料达到绝对硬上限 | 检查上方传感器、堵塞、打滑、正常送料长度、补偿长度与 `toolchange_feed_hard_limit` |
+| 回料达到绝对硬上限 | 检查真实耗材位置、公共通道、正常回料长度与 `toolchange_retract_hard_limit` |
+
+已结束的送料或探测错误可以通过界面的“清除故障”复位软件提示。该操作不会回抽耗材、改变槽位状态或伪造传感器结果；如果按钮仍不可用，必须按界面显示的阻塞原因处理真实耗材路径。
 
 ## 23. 安全边界
 
@@ -508,9 +539,10 @@ ACE_DISABLE_FEED_ASSIST INDEX=0
 - 不同时加载其他 ACE 驱动。
 - 不开启 `enable_debug_rpc` 作为日常控制方式。
 - 不删除安装归档，直到升级和真机动作验证完成。
+- 硬上限失败只停止换料并暂停打印，不通过 `CANCEL_PRINT` 取消任务。
 
 ## 24. 已验证范围与剩余风险
 
-v1.2.0 已进行驱动、Moonraker、备用页、Fluidd 和安装器自动测试；Fluidd 完整构建基线为 v1.37.2。自动测试不能替代真实切刀坐标、传感器电平、管路长度、料盘惯性、USB 供电和耗材打滑验证。
+当前开发分支的配置版本、上下传感器独立消抖和送料/回料绝对硬上限仅完成配置解析、服务/API/状态等静态部署验证；未执行送料、回抽、切刀、自动探测或完整换料。Fluidd 完整构建基线为 v1.37.2。静态验证和自动测试不能替代真实切刀坐标、传感器电平、管路长度、料盘惯性、USB 供电和耗材打滑验证。
 
 安装器的归档和混合安装顺序已在 Git Bash 自动测试，原生 Linux 真实软链接类型/目标恢复仍应在不同发行版与安装布局中继续验证。安装和升级后请保留 `~/.local/share/ace-pro-control-center/old/`。

@@ -186,6 +186,20 @@ createApp({
             slotPositions: ['unknown', 'unknown', 'unknown', 'unknown'],
             motionOwner: '',
             printing: false,
+            statusStale: false,
+            warnings: [],
+            toolchange: {
+                active: false,
+                recovery_required: false,
+                last_error: ''
+            },
+            configuration: {
+                ace_config_version: null,
+                extruder_sensor_debounce_count: null,
+                toolhead_sensor_debounce_count: null,
+                toolchange_feed_hard_limit: null,
+                toolchange_retract_hard_limit: null
+            },
             calibration: {
                 available: false,
                 valid: false,
@@ -500,7 +514,7 @@ createApp({
                 // Проверяем, что это действительно данные статуса (есть хотя бы одно из полей)
                 if (statusData && typeof statusData === 'object' &&
                     (statusData.status !== undefined || statusData.slots !== undefined || statusData.dryer !== undefined)) {
-                    this.updateStatus(statusData);
+                    this.updateStatus(statusData, true);
                 } else {
                     console.warn('Invalid status data in response:', result);
                 }
@@ -529,7 +543,7 @@ createApp({
             }
         },
 
-        updateStatus(data) {
+        updateStatus(data, replaceCriticalState = false) {
             if (!data || typeof data !== 'object') {
                 console.warn('Invalid status data:', data);
                 return;
@@ -640,9 +654,24 @@ createApp({
                 this.deviceStatus.enable_rfid = data.enable_rfid;
             }
             if (data.sensors && typeof data.sensors === 'object') {
-                this.sensors.upper = { ...this.sensors.upper, ...(data.sensors.upper || {}) };
-                this.sensors.lower = { ...this.sensors.lower, ...(data.sensors.lower || {}) };
-                this.sensors.parking = { ...this.sensors.parking, ...(data.sensors.parking || {}) };
+                const normalizeSensor = (name, sensor) => ({
+                    name,
+                    available: Boolean(sensor?.available),
+                    detected: Boolean(sensor?.detected)
+                });
+                if (replaceCriticalState) {
+                    this.sensors.upper = normalizeSensor('extruder_sensor', data.sensors.upper);
+                    this.sensors.lower = normalizeSensor('toolhead_sensor', data.sensors.lower);
+                    this.sensors.parking = normalizeSensor('parking_sensor', data.sensors.parking);
+                } else {
+                    this.sensors.upper = { ...this.sensors.upper, ...(data.sensors.upper || {}) };
+                    this.sensors.lower = { ...this.sensors.lower, ...(data.sensors.lower || {}) };
+                    this.sensors.parking = { ...this.sensors.parking, ...(data.sensors.parking || {}) };
+                }
+            } else if (replaceCriticalState) {
+                this.sensors.upper = { name: 'extruder_sensor', available: false, detected: false };
+                this.sensors.lower = { name: 'toolhead_sensor', available: false, detected: false };
+                this.sensors.parking = { name: 'parking_sensor', available: false, detected: false };
             }
             if (data.endless_spool && typeof data.endless_spool === 'object') {
                 this.endlessSpool = { ...this.endlessSpool, ...data.endless_spool };
@@ -650,11 +679,42 @@ createApp({
             if (Array.isArray(data.slot_positions)) {
                 this.slotPositions = Array.from({ length: 4 }, (_, index) => data.slot_positions[index] || 'unknown');
             }
-            if (data.motion_owner !== undefined) {
+            if (data.motion_owner !== undefined || replaceCriticalState) {
                 this.motionOwner = String(data.motion_owner || '');
             }
-            if (data.printing !== undefined) {
-                this.printing = Boolean(data.printing);
+            if (data.printing !== undefined || replaceCriticalState) {
+                this.printing = Boolean(data.printing || false);
+            }
+            if (data.stale !== undefined || replaceCriticalState) {
+                this.statusStale = Boolean(data.stale || false);
+            }
+            if (data.toolchange && typeof data.toolchange === 'object') {
+                this.toolchange = {
+                    active: Boolean(data.toolchange.active),
+                    recovery_required: Boolean(data.toolchange.recovery_required),
+                    last_error: String(data.toolchange.last_error || '')
+                };
+            } else if (replaceCriticalState) {
+                this.toolchange = { active: false, recovery_required: false, last_error: '' };
+            }
+            if (Array.isArray(data.warnings)) {
+                this.warnings = data.warnings.filter(item => typeof item === 'string');
+            } else if (replaceCriticalState) {
+                this.warnings = [];
+            }
+            const nestedConfiguration = data.configuration && typeof data.configuration === 'object'
+                ? data.configuration
+                : {};
+            for (const key of Object.keys(this.configuration)) {
+                const hasNestedValue = Object.prototype.hasOwnProperty.call(nestedConfiguration, key);
+                const hasTopLevelValue = Object.prototype.hasOwnProperty.call(data, key);
+                if (hasNestedValue || hasTopLevelValue) {
+                    this.configuration[key] = this.normalizeDiagnosticNumber(
+                        hasTopLevelValue ? data[key] : nestedConfiguration[key]
+                    );
+                } else if (replaceCriticalState) {
+                    this.configuration[key] = null;
+                }
             }
             if (data.calibration && typeof data.calibration === 'object') {
                 this.calibration = {
@@ -1213,9 +1273,51 @@ createApp({
                 (!this.sensors.parking.available || !this.sensors.parking.detected);
         },
 
+        motionBlockReason() {
+            if (!this.wsConnected || this.deviceStatus.connection_state !== 'connected') return 'ACE 未连接';
+            if (this.statusStale) return '状态已过期，等待刷新';
+            if (this.printing) return '打印或暂停期间不可操作';
+            if (this.toolchange.recovery_required) return '换料恢复尚未完成';
+            if (this.toolchange.active) return '换料动作正在执行';
+            if (this.motionOwner) return `动作锁：${this.motionOwner}`;
+            if (this.endlessSpool.in_progress) return '无限续料动作正在执行';
+            if (this.deviceStatus.status === 'busy') return 'ACE 正忙';
+            return '';
+        },
+
+        calibrationBlockReason() {
+            const motionReason = this.motionBlockReason();
+            if (motionReason) return motionReason;
+            const unavailable = [];
+            if (!this.sensors.upper.available) unavailable.push('上方传感器');
+            if (!this.sensors.lower.available) unavailable.push('下方传感器');
+            if (unavailable.length) return `传感器不可用：${unavailable.join('、')}`;
+            const detected = [];
+            if (this.sensors.upper.detected) detected.push('上方传感器');
+            if (this.sensors.lower.detected) detected.push('下方传感器');
+            if (this.sensors.parking.available && this.sensors.parking.detected) detected.push('五通传感器');
+            return detected.length ? `仍检测到耗材：${detected.join('、')}` : '';
+        },
+
+        normalizeDiagnosticNumber(value) {
+            if (value === null || value === undefined || value === '') return null;
+            const normalized = Number(value);
+            return Number.isFinite(normalized) ? normalized : null;
+        },
+
+        configurationDiagnostics() {
+            const format = (value, suffix = '') => value === null ? '未报告' : `${value}${suffix}`;
+            return [
+                { key: 'ace_config_version', label: '配置版本', value: format(this.configuration.ace_config_version) },
+                { key: 'extruder_sensor_debounce_count', label: '上方传感器消抖', value: format(this.configuration.extruder_sensor_debounce_count, ' 次') },
+                { key: 'toolhead_sensor_debounce_count', label: '下方传感器消抖', value: format(this.configuration.toolhead_sensor_debounce_count, ' 次') },
+                { key: 'toolchange_feed_hard_limit', label: '送料绝对上限', value: format(this.configuration.toolchange_feed_hard_limit, ' mm') },
+                { key: 'toolchange_retract_hard_limit', label: '回料绝对上限', value: format(this.configuration.toolchange_retract_hard_limit, ' mm') }
+            ];
+        },
+
         motionControlsDisabled() {
-            return this.printing || !this.wsConnected || this.deviceStatus.connection_state !== 'connected' ||
-                Boolean(this.motionOwner) || this.deviceStatus.status === 'busy';
+            return this.motionBlockReason() !== '';
         },
 
         connectionBadgeClass() {

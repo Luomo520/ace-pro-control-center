@@ -173,6 +173,39 @@ class AceStatusContractTests(unittest.TestCase):
         self.assertTrue(status["sensors"]["parking"]["available"])
         self.assertTrue(status["sensors"]["parking"]["detected"])
 
+    def test_exposes_configuration_diagnostics_without_breaking_legacy_status(self):
+        status = ace_status.normalize_status(
+            {
+                "ace_config_version": "1",
+                "extruder_sensor_debounce_count": 3,
+                "configuration": {
+                    "toolhead_sensor_debounce_count": "4",
+                    "toolchange_feed_hard_limit": 2600,
+                    "toolchange_retract_hard_limit": "2800",
+                },
+            },
+            {},
+            {},
+            {},
+        )
+
+        expected = {
+            "ace_config_version": 1,
+            "extruder_sensor_debounce_count": 3,
+            "toolhead_sensor_debounce_count": 4,
+            "toolchange_feed_hard_limit": 2600,
+            "toolchange_retract_hard_limit": 2800,
+        }
+        self.assertEqual(status["configuration"], expected)
+        for key, value in expected.items():
+            self.assertEqual(status[key], value)
+
+        legacy = ace_status.normalize_status({}, {}, {}, {})
+        self.assertEqual(
+            legacy["configuration"],
+            {key: None for key in expected},
+        )
+
     def test_exposes_material_profiles_and_resolves_slot_profile(self):
         status = ace_status.normalize_status(
             {
@@ -273,6 +306,53 @@ class AceStatusContractTests(unittest.TestCase):
         self.assertFalse(status["calibration"]["available"])
         self.assertFalse(status["calibration"]["valid"])
         self.assertEqual(status["calibration"]["phase"], "unavailable")
+
+    def test_completed_toolchange_error_is_diagnostic_not_active_warning(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "toolchange": {
+                    "active": False,
+                    "last_error": "上一次送料失败",
+                    "recovery_required": False,
+                },
+            },
+            {},
+            {"filament_detected": False},
+            {"filament_detected": False},
+        )
+
+        self.assertEqual(status["toolchange"]["last_error"], "上一次送料失败")
+        self.assertNotIn("上一次送料失败", status["warnings"])
+
+    def test_active_toolchange_error_remains_an_active_warning(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "toolchange": {
+                    "active": True,
+                    "last_error": "换料恢复中",
+                },
+            },
+            {},
+            {"filament_detected": False},
+            {"filament_detected": False},
+        )
+
+        self.assertIn("换料恢复中", status["warnings"])
+
+    def test_paused_print_is_reported_as_motion_blocked(self):
+        component = ace_status.AceStatus.__new__(ace_status.AceStatus)
+        component.upper_sensor_name = "extruder_sensor"
+        component.lower_sensor_name = "toolhead_sensor"
+
+        status = component._normalize_from_query({
+            "ace": {"connected": True, "status": "ready"},
+            "print_stats": {"state": "paused"},
+            "idle_timeout": {"state": "idle"},
+        })
+
+        self.assertTrue(status["printing"])
 
     def test_normalizes_alternate_dryer_status_fields(self):
         status = ace_status.normalize_status(

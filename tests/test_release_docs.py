@@ -6,6 +6,55 @@ ROOT = pathlib.Path(__file__).parents[1]
 
 
 class ReleaseDocumentationTests(unittest.TestCase):
+    def test_config_specification_matches_the_distributed_template(self):
+        spec = (ROOT / "docs" / "ACE_CONFIG_SPECIFICATION.zh-CN.md").read_text(
+            encoding="utf-8")
+        section_template = (
+            ROOT / "docs" / "templates" / "ace-config-section.template.ini"
+        ).read_text(encoding="utf-8")
+        config = (ROOT / "ace.cfg").read_text(encoding="utf-8")
+        index = (ROOT / "docs" / "DOCUMENTATION_INDEX.zh-CN.md").read_text(
+            encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        agent_rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        for phrase in (
+            "功能整体介绍",
+            "☆☆☆☆☆",
+            "五通传感器与自动探测料管长度",
+            "代码回退值只用于兼容旧配置",
+            "配置验收标准",
+        ):
+            self.assertIn(phrase, spec)
+
+        for filename_container in (index, readme):
+            self.assertIn("ACE_CONFIG_SPECIFICATION.zh-CN.md", filename_container)
+            self.assertIn("ace-config-section.template.ini", filename_container)
+
+        self.assertIn("../AGENTS.md", index)
+        self.assertIn("ace-config-section.template.ini", spec)
+        for phrase in (
+            "`ace.cfg` 配置治理",
+            "ACE_CONFIG_SPECIFICATION.zh-CN.md",
+            "ace-config-section.template.ini",
+            "驱动未读取的保留需求只能写入规范",
+            "材料档案必须保留在 `[ace]` 内",
+            "不得创建没有 Klipper 模块的 `[ace_materials]`",
+        ):
+            self.assertIn(phrase, agent_rules)
+
+        for phrase in (
+            "功能整体介绍：",
+            "作用：",
+            "填写：",
+            "依赖/互斥：",
+            "风险：",
+        ):
+            self.assertIn(phrase, section_template)
+
+        self.assertGreaterEqual(config.count("☆☆☆☆☆"), 10)
+        self.assertNotIn("#toolhead_sensor_to_nozzle: 50", config)
+
     def test_project_handoff_documents_are_present_and_linked(self):
         required_docs = {
             "PROJECT_MEMORY.zh-CN.md": ("ACE Pro 管理中心项目记忆", "DECISIONS.zh-CN.md"),

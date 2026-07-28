@@ -19,7 +19,9 @@
 | `FEATURES.zh-CN.md` | 用户与维护者 | 当前完整功能和限制 |
 | `DRIVER-v1.2.0.zh-CN.md` | 调机用户 | 驱动行为、参数和调校边界 |
 | `RELEASE-v1.2.0.zh-CN.md` | 安装与升级用户 | v1.2.0 重大变化、升级路径、回滚和已知边界 |
-| `ACE_CONFIG_DETAILED_STYLE_REFERENCE.zh-CN.md` | 配置维护者 | `ace.cfg` 结构和注释样式基准 |
+| `ACE_CONFIG_SPECIFICATION.zh-CN.md` | 配置填写者与维护者 | 配置功能总览、五星必填项、分区、依赖和治理规范；不是运行配置 |
+| `templates/ace-config-section.template.ini` | 配置维护者 | 新增功能区、必填项、默认项和条件项的注释格式；不可安装 |
+| `ACE_CONFIG_DETAILED_STYLE_REFERENCE.zh-CN.md` | 配置维护者 | 历史结构与注释设计依据；不作为当前参数值来源 |
 | `AUTO_DRYING_FLOW.zh-CN.md` | 使用者 | 自动跟随打印烘干流程 |
 
 ## 开发文档
@@ -44,3 +46,14 @@
 - `CHANGELOG` 只记录版本变化，不代替产品需求或开发说明。
 - `audits` 记录某一时间点的检查结论；修复问题后应标注已关闭或重新审计。
 - 历史计划不自动代表当前实现，必须用代码和测试核验。
+
+## 配置文档权威顺序
+
+1. 根目录 `ace.cfg` 是唯一可安装模板，也是发布默认值和活动参数的唯一来源。
+2. `ACE_CONFIG_SPECIFICATION.zh-CN.md` 规定结构、语义、依赖和变更门槛，不维护
+   第二套机器参数或默认值表。
+3. `templates/ace-config-section.template.ini` 只供未来编写功能区，不得安装、部署
+   或扩写成完整配置。
+4. 材料档案必须位于 `[ace]`；历史 `[ace_materials]` 建议已废弃。
+5. `ace_config_version`、上下传感器独立消抖和送料/回料绝对硬上限已进入正式
+   配置契约；旧配置兼容和失败暂停规则以配置规范及驱动测试为准。

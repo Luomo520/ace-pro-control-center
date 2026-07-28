@@ -308,11 +308,12 @@
                         </select>
                     </label>
                     <button class="btn btn-primary" :disabled="motionControlsDisabled()" @click="preloadSlot(calibrationSlot)">冷态预装载</button>
-                    <button class="btn btn-secondary" :disabled="motionControlsDisabled() || !calibrationSensorsClear()" @click="calibrate(calibrationSlot)">自动探测料管长度</button>
+                    <button class="btn btn-secondary" :disabled="calibrationBlockReason() !== ''" @click="calibrate(calibrationSlot)">自动探测料管长度</button>
+                    <span v-if="calibrationBlockReason()" class="calibration-blocked-reason" role="status">{{ calibrationBlockReason() }}</span>
                     <button class="btn btn-success" :disabled="motionControlsDisabled() || calibration.phase !== 'retract_complete'" @click="saveCalibration">保存探测结果</button>
                     <button class="btn btn-secondary" @click="cancelCalibration">取消探测</button>
                     <button class="btn btn-warning" :disabled="motionControlsDisabled()" @click="fullUnload(calibrationSlot)">完全卸载</button>
-                    <button class="btn btn-danger" @click="abortToolchange">紧急停止</button>
+                    <button class="btn btn-danger" @click="abortToolchange">{{ toolchange.active || toolchange.recovery_required || motionOwner ? '紧急停止' : '清除故障' }}</button>
                 </div>
                 <div v-if="calibration.last_error" class="calibration-error">
                     {{ calibration.last_error }}
@@ -337,6 +338,15 @@
                     </button>
                     <button @click="testRunoutSensors" class="btn btn-secondary">诊断传感器</button>
                 </div>
+                <details class="configuration-diagnostics">
+                    <summary>驱动配置诊断</summary>
+                    <div class="configuration-diagnostics-grid">
+                        <div v-for="item in configurationDiagnostics()" :key="item.key" class="configuration-diagnostic-item">
+                            <span>{{ item.label }}</span>
+                            <strong>{{ item.value }}</strong>
+                        </div>
+                    </div>
+                </details>
             </div>
         </div>
 
