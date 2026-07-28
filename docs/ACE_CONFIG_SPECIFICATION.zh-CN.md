@@ -236,6 +236,7 @@ parameter_name: value
 | `ace_ready_timeout` | ACE 恢复 ready 的最长等待。 |
 | `ace_stop_ready_timeout` | ACE 停止送料后的 ready 等待下限。 |
 | `ace_request_timeout` | 单个 ACE 请求最长等待。 |
+| `sensor_trigger_grace_time` | 理论运动时间结束后的传感器额外监测时间；只延长监测，不追加移动距离。 |
 | `ace_reconnect_timeout` | 断联后的重连等待上限。 |
 | `ace_reconnect_stable_time` | 重连后稳定等待时间。 |
 | `ace_motion_chunk_length` | 需要分段的慢速或兼容动作默认分段距离。 |

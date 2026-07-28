@@ -93,6 +93,7 @@ ACE T0-T3 -> 五通 -> 五通传感器（可选） -> 上方传感器 -> 挤出�
 - 可选五通传感器：用于检测公共通道和辅助回抽停放，不是所有机器的必需硬件。
 - 上方与下方传感器使用 `extruder_sensor_debounce_count` 和
   `toolhead_sensor_debounce_count` 独立连续确认，不能共用五通或断料消抖。
+- 传感器停止动作在理论运行时间结束后保留有限宽限监测，不增加请求距离或硬上限。
 
 传感器名称由驱动固定创建为 `extruder_sensor` 和 `toolhead_sensor`，Moonraker `[ace_status]` 默认读取这两个对象名。MCU 引脚仍由用户在 `ace.cfg` 中填写。
 

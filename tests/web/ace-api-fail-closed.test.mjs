@@ -97,6 +97,14 @@ for (const scenario of [
     apiAvailable: true,
   },
   {
+    name: 'driver command error',
+    error: Object.assign(new Error('达到最大距离后上方传感器未触发'), {
+      isAceCommandError: true,
+    }),
+    expectedError: /^达到最大距离后上方传感器未触发$/,
+    apiAvailable: true,
+  },
+  {
     name: '409',
     error: httpError(409, { error: { message: '打印中不允许执行该操作' } }),
     expectedError: /打印中不允许执行该操作/,

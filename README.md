@@ -151,6 +151,7 @@ nano ~/printer_data/config/ace.cfg
 | `toolhead_sensor_to_nozzle` | 下方传感器到喷嘴的耗材路径长度 |
 | `extruder_sensor_debounce_count` | 上方传感器到达/解除的独立连续确认次数 |
 | `toolhead_sensor_debounce_count` | 下方传感器到达/解除的独立连续确认次数 |
+| `sensor_trigger_grace_time` | 理论运动结束后继续监测传感器的时间，只延长监测而不追加移动距离 |
 | `parking_sensor_pin` | 可选五通传感器引脚；没有传感器时保持注释 |
 | `parking_sensor_clear_move_length` | 五通传感器解除后继续向 ACE 回抽的总距离 |
 | `CUT_TIP` | 本机切刀坐标和动作；模板默认注释，不能照抄其他机器 |

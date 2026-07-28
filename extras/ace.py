@@ -407,6 +407,8 @@ class BunnyAce:
         self.toolhead_sensor_to_nozzle_length = config.getint('toolhead_sensor_to_nozzle', 0)
         self.extruder_sensor_timeout = config.getfloat(
             'extruder_sensor_timeout', 15., above=0.)
+        self.sensor_trigger_grace_time = config.getfloat(
+            'sensor_trigger_grace_time', 3., minval=.2, maxval=10.)
         self.toolhead_sensor_max_feed_length = config.getfloat(
             'toolhead_sensor_max_feed_length', 200., above=0.)
         self.ace_ready_timeout = config.getfloat(
@@ -461,13 +463,13 @@ class BunnyAce:
             'calibration_feed_speed',
             legacy_calibration_speed
             if legacy_calibration_speed is not None
-            else 25.,
+            else 50.,
             above=0.)
         self.calibration_retract_speed = config.getfloat(
             'calibration_retract_speed',
             legacy_calibration_speed
             if legacy_calibration_speed is not None
-            else 25.,
+            else 50.,
             above=0.)
         self.calibration_chunk_length = config.getfloat(
             'calibration_chunk_length', 50., above=0.)
@@ -889,6 +891,22 @@ class BunnyAce:
             return int(getattr(self, 'parking_sensor_debounce_count', 1))
         return 1
 
+    def _sensor_monitor_failure_detail(self, result):
+        monitor = result.get('sensor_monitor', {}) if result else {}
+        if not monitor:
+            return ''
+        final_state = '有料' if monitor.get('final_state') else '无料'
+        return (
+            '；理论运行 %.1f 秒，额外监测 %.1f 秒，最终状态=%s，'
+            '连续有效样本=%d/%d'
+            % (
+                float(monitor.get('theoretical_duration', 0.)),
+                float(monitor.get('grace_time', 0.)),
+                final_state,
+                int(monitor.get('matching_samples', 0)),
+                int(monitor.get('required_samples', 1)),
+            ))
+
     def _require_calibration_save_preflight(self, preview):
         state = self._print_state()
         if state in ('printing', 'paused'):
@@ -910,6 +928,7 @@ class BunnyAce:
 
     def _calibrate_feed_without_parking_sensor(self, index, max_distance):
         completed = 0.
+        last_result = {}
         while completed < max_distance:
             if self._sensor_state_stable('extruder_sensor', True):
                 upper_bound = completed
@@ -920,6 +939,7 @@ class BunnyAce:
             result = self._feed(
                 index, step, self.calibration_feed_speed,
                 stop_sensor='extruder_sensor')
+            last_result = result
             if result.get('uncertain'):
                 raise RuntimeError(
                     'ACE：标定送料连接状态不确定，未重放该分段')
@@ -932,8 +952,9 @@ class BunnyAce:
             completed += step
         else:
             raise FilamentFeedError(
-                'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发'
-                % max_distance)
+                'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发%s'
+                % (max_distance,
+                   self._sensor_monitor_failure_detail(last_result)))
 
         if upper_bound <= 0:
             raise RuntimeError('ACE：上方传感器在送料前已触发')
@@ -968,8 +989,9 @@ class BunnyAce:
                         or self._sensor_state_stable(
                             'extruder_sensor', True)):
                     raise FilamentFeedError(
-                        'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发'
-                        % max_distance)
+                        'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发%s'
+                        % (max_distance,
+                           self._sensor_monitor_failure_detail(result)))
                 if not self._sensor_state_stable('parking_sensor', True):
                     raise RuntimeError(
                         'ACE：上方传感器已触发，但五通传感器未检测到耗材；'
@@ -2874,11 +2896,22 @@ class BunnyAce:
                 request=request,
                 callback=lambda self, response: None,
                 operation=operation)
+            sent_time = token.get('sent_time')
+            if sent_time is None:
+                sent_time = self.reactor.monotonic()
+            theoretical_duration = float(length) / float(speed)
+            motion_deadline = sent_time + theoretical_duration + .1
+            grace_time = (
+                float(getattr(self, 'sensor_trigger_grace_time', 3.))
+                if stop_sensor is not None else 0.)
+            monitor_deadline = motion_deadline + grace_time
             motion_timeout = max(
                 self.ace_request_timeout + .5,
-                float(length) / float(speed) + 2.5)
+                theoretical_duration + grace_time + 2.5)
             queued_stop = [None]
             matching_samples = [0]
+            triggered_in_grace = [False]
+            required_samples = max(1, int(stop_debounce_count))
 
             def stop_motion(token=None):
                 if method == 'feed_filament':
@@ -2896,15 +2929,22 @@ class BunnyAce:
                     == bool(stop_when_present))
                 matching_samples[0] = (
                     matching_samples[0] + 1 if sensor_matches else 0)
-                if matching_samples[0] < max(1, int(stop_debounce_count)):
+                if matching_samples[0] < required_samples:
                     return
+                triggered_in_grace[0] = (
+                    self.reactor.monotonic() > motion_deadline)
                 self._set_toolchange_phase(
                     'SENSOR_STOP_REQUESTED',
                     stop_sensor=stop_sensor,
                     stop_sensor_state=bool(stop_when_present))
                 if method == 'feed_filament':
-                    self.gcode.respond_info(
-                        'ACE：%s 已触发，正在停止 ACE 送料' % stop_sensor)
+                    if triggered_in_grace[0]:
+                        self.gcode.respond_info(
+                            'ACE：%s 在理论送料时间结束后触发，'
+                            '已停止送料并继续当前流程' % stop_sensor)
+                    else:
+                        self.gcode.respond_info(
+                            'ACE：%s 已触发，正在停止 ACE 送料' % stop_sensor)
                     queued_stop[0] = self._queue_stop_feed(index)
                 else:
                     self.gcode.respond_info(
@@ -2932,6 +2972,7 @@ class BunnyAce:
                 return {
                     'code': 0,
                     'stopped_by_sensor': True,
+                    'triggered_in_grace': triggered_in_grace[0],
                 }
 
             response = token.get('response') or {}
@@ -2939,10 +2980,7 @@ class BunnyAce:
                 raise ValueError(
                     'ACE 错误：' + response.get('msg', '未知错误'))
 
-            motion_deadline = (
-                token.get('sent_time', self.reactor.monotonic())
-                + (float(length) / float(speed)) + .1)
-            while self.reactor.monotonic() < motion_deadline:
+            while self.reactor.monotonic() < monitor_deadline:
                 monitor_stop_sensor()
                 if queued_stop[0] is not None:
                     stop_motion(token=queued_stop[0])
@@ -2951,6 +2989,7 @@ class BunnyAce:
                     return {
                         'code': 0,
                         'stopped_by_sensor': True,
+                        'triggered_in_grace': triggered_in_grace[0],
                     }
                 if (not self._connected
                         or self._connection_generation != generation):
@@ -2958,9 +2997,36 @@ class BunnyAce:
                     return {'code': 0, 'recovered': True, 'uncertain': True}
                 self.reactor.pause(
                     min(
-                        motion_deadline,
+                        monitor_deadline,
                         self.reactor.monotonic()
                         + (.02 if stop_sensor is not None else .1)))
+            if (stop_sensor is not None
+                    and queued_stop[0] is None
+                    and self._sensor_state_stable(
+                        stop_sensor, stop_when_present,
+                        samples=required_samples)):
+                matching_samples[0] = required_samples
+                monitor_stop_sensor()
+            if queued_stop[0] is not None:
+                stop_motion(token=queued_stop[0])
+                self.wait_ace_ready(
+                    timeout=self._motion_stop_ready_timeout(length, speed))
+                return {
+                    'code': 0,
+                    'stopped_by_sensor': True,
+                    'triggered_in_grace': True,
+                }
+            if stop_sensor is not None:
+                response = dict(response)
+                response['sensor_monitor'] = {
+                    'sensor': stop_sensor,
+                    'theoretical_duration': theoretical_duration,
+                    'grace_time': grace_time,
+                    'elapsed': max(0., self.reactor.monotonic() - sent_time),
+                    'final_state': bool(self._sensor_present(stop_sensor)),
+                    'matching_samples': matching_samples[0],
+                    'required_samples': required_samples,
+                }
             return response
 
     def _enable_feed_assist(self, index, allow_reconnect=None):

@@ -173,10 +173,11 @@ flowchart LR
 | `toolhead_to_nozzle_speed` | 5 mm/s | 下方触发后到喷嘴的速度 |
 | `toolhead_sensor_to_nozzle` | 80 mm | 下方传感器到喷嘴的距离 |
 | `extruder_sensor_timeout` | 15 s | 传感器相关等待上限 |
+| `sensor_trigger_grace_time` | 见根 `ace.cfg` | 理论运动结束后的额外传感器监测时间，不追加移动距离 |
 | `extruder_sensor_debounce_count` | 见根 `ace.cfg` | 上方传感器独立连续确认次数 |
 | `toolhead_sensor_debounce_count` | 见根 `ace.cfg` | 下方传感器独立连续确认次数 |
 
-上方触发后下方不触发时，检查挤出齿轮是否真正转动、耗材是否进入齿轮、下方传感器方向和最大送料上限。上下传感器分别使用自己的消抖次数，不能用一个传感器的参数掩盖另一个传感器的抖动。不要把 `toolhead_sensor_max_feed_length` 无限制调大。
+上方触发后下方不触发时，检查挤出齿轮是否真正转动、耗材是否进入齿轮、下方传感器方向和最大送料上限。上下传感器分别使用自己的消抖次数，不能用一个传感器的参数掩盖另一个传感器的抖动。`sensor_trigger_grace_time` 只吸收料盘惯性、打滑、ACE 加减速和通信延迟造成的稍晚触发，不会增加已请求距离。不要把 `toolhead_sensor_max_feed_length` 无限制调大。
 
 ## 9. 五通传感器与自动探测参数
 
@@ -188,7 +189,7 @@ flowchart LR
 | `parking_sensor_debounce_count` | 3 | 连续目标状态次数，降低微动抖动误停 |
 | `five_way_parking_margin` | 20 mm | 只用于无五通传感器的兼容估算路径 |
 | `calibration_max_retract_length` | 1500 mm | 搜索五通传感器解除状态的回抽上限 |
-| `calibration_speed` | 25 mm/s | 自动探测送料和回抽的共用默认速度 |
+| `calibration_speed` | 50 mm/s | 自动探测送料和回抽的共用默认速度 |
 | `calibration_feed_speed` | 未配置 | 可选送料速度覆盖项 |
 | `calibration_retract_speed` | 未配置 | 可选回抽速度覆盖项 |
 | `calibration_chunk_length` | 50 mm | 粗测分段，结果允许约一个分段范围的误差 |

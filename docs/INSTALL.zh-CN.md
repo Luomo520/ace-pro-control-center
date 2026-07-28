@@ -421,6 +421,7 @@ material_1_temperature: 210
 | `ace_config_version` | 标识配置结构，供驱动选择兼容解析路径 | 使用根 `ace.cfg` 中的当前值，不自行猜测或递增 |
 | `extruder_sensor_debounce_count` | 上方传感器触发与解除的独立连续确认次数 | 按上方微动稳定性调整，不与下方或断料消抖共用 |
 | `toolhead_sensor_debounce_count` | 下方传感器触发与解除的独立连续确认次数 | 按下方微动稳定性调整，不与上方或断料消抖共用 |
+| `sensor_trigger_grace_time` | 理论运动结束后的传感器额外监测时间 | 只在确有机械或通信延迟时调整；不会追加送料或回抽距离 |
 | `toolchange_feed_hard_limit` | 送料、接近和有限补偿允许达到的绝对累计上限 | 必须覆盖正常路径和合理补偿，但不能用过大值掩盖打滑或传感器故障 |
 | `toolchange_retract_hard_limit` | 回料及相关恢复路径允许达到的绝对累计上限 | 必须覆盖正常回料路径，同时限制持续空转和过度回抽 |
 

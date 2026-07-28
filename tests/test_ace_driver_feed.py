@@ -31,6 +31,17 @@ class FakeGcode:
         self.messages.append(message)
 
 
+class FakeReactor:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def pause(self, deadline):
+        self.now = deadline
+
+
 def make_ace(intermittent):
     ace = object.__new__(ace_driver.BunnyAce)
     ace.intermittent_feed = intermittent
@@ -44,6 +55,7 @@ def make_ace(intermittent):
     ace.extruder_sensor_timeout = 15.0
     ace._active_ace_motion = None
     ace._abort_requested = False
+    ace.reactor = FakeReactor()
     ace.gcode = FakeGcode()
     ace._sensor_present = lambda _name: False
     ace._set_toolchange_phase = lambda *_args, **_kwargs: None
@@ -110,6 +122,69 @@ class AceContinuousFeedTests(unittest.TestCase):
 
         self.assertTrue(result["stopped_by_sensor"])
         self.assertEqual(waits, [25.0])
+
+    def test_sensor_trigger_during_grace_period_stops_motion(self):
+        ace = make_ace(intermittent=False)
+        ace.ace_stop_ready_timeout = 25.0
+        ace.ace_request_timeout = 5.0
+        ace.sensor_trigger_grace_time = 0.3
+        ace._connected = True
+        ace._toolchange_context = {}
+        ace._connection_generation = 1
+        ace.reactor = FakeReactor()
+        token = {
+            "response": {"code": 0},
+            "lost": False,
+            "sent_time": 0.0,
+        }
+        stop_token = object()
+        ace.send_request = lambda **_kwargs: token
+        ace._sensor_present = lambda _name: ace.reactor.now >= 1.16
+        ace._queue_stop_feed = lambda _index: stop_token
+        ace._stop_feed = lambda _index, token=None: {"code": 0}
+        ace._wait_for_request = lambda *_args, **_kwargs: True
+        ace.wait_ace_ready = lambda timeout=None: None
+
+        result = ace._run_ace_motion(
+            "feed_filament", 0, 10, 10,
+            stop_sensor="extruder_sensor",
+            stop_debounce_count=2)
+
+        self.assertTrue(result["stopped_by_sensor"])
+        self.assertTrue(result["triggered_in_grace"])
+        self.assertTrue(any(
+            "理论送料时间结束后触发" in message
+            for message in ace.gcode.messages))
+
+    def test_sensor_timeout_reports_grace_period_diagnostics(self):
+        ace = make_ace(intermittent=False)
+        ace.ace_stop_ready_timeout = 25.0
+        ace.ace_request_timeout = 5.0
+        ace.sensor_trigger_grace_time = 0.2
+        ace._connected = True
+        ace._toolchange_context = {}
+        ace._connection_generation = 1
+        ace.reactor = FakeReactor()
+        token = {
+            "response": {"code": 0},
+            "lost": False,
+            "sent_time": 0.0,
+        }
+        ace.send_request = lambda **_kwargs: token
+        ace._sensor_present = lambda _name: False
+        ace._wait_for_request = lambda *_args, **_kwargs: True
+
+        result = ace._run_ace_motion(
+            "feed_filament", 1, 10, 10,
+            stop_sensor="extruder_sensor",
+            stop_debounce_count=2)
+
+        monitor = result["sensor_monitor"]
+        self.assertEqual(monitor["theoretical_duration"], 1.0)
+        self.assertEqual(monitor["grace_time"], 0.2)
+        self.assertFalse(monitor["final_state"])
+        self.assertEqual(monitor["matching_samples"], 0)
+        self.assertEqual(monitor["required_samples"], 2)
 
     def test_retract_sensor_clear_uses_stop_unwind_after_debounce(self):
         ace = make_ace(intermittent=False)

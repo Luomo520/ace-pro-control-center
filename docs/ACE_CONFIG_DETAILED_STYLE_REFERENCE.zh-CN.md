@@ -140,8 +140,8 @@ parameter_name: value
 - 送料沿字符图箭头移动，回抽反向移动；传感器触发或解除后，再按 `parking_sensor_clear_move_length` 定位停放点。
 - `parking_sensor_clear_move_length` 已包含安全余量时，不再叠加 `five_way_parking_margin`。
 - 通用模板不得出现 `^PC0` 等真实引脚。
-- `calibration_speed` 是送料和回抽的通用速度，单位为 `mm/s`，默认 `25`。
-- `calibration_feed_speed` 与 `calibration_retract_speed` 默认保持注释，示例值均为 `25 mm/s`；取消注释后只覆盖对应方向的 `calibration_speed`。
+- `calibration_speed` 是送料和回抽的通用速度，单位为 `mm/s`，默认 `50`。
+- `calibration_feed_speed` 与 `calibration_retract_speed` 默认保持注释，示例值均为 `50 mm/s`；取消注释后只覆盖对应方向的 `calibration_speed`。
 - `calibration_chunk_length` 是主体粗测分段，单位为 `mm`，默认 `50`；增大可减少启停，减小可提高定位粒度。
 - `calibration_final_chunk_length` 是接近目标位置时的末段分段，单位为 `mm`，默认 `50`，独立于粗测分段。
 - 每个探测参数前必须分别说明用途、单位、填写方法、默认值和覆盖关系，不能只用一段共用短注释代替。
@@ -195,12 +195,17 @@ parameter_name: value
 - `toolhead_to_nozzle_speed`
 - `toolhead_sensor_max_feed_length`
 - `extruder_sensor_timeout`
+- `sensor_trigger_grace_time`
 - `extruder_sensor_debounce_count`
 - `toolhead_sensor_debounce_count`
 
 这一组控制上方传感器触发后，由挤出机把耗材送到下方传感器，再送到喷嘴的过程。
 上下传感器必须分别使用自己的连续确认次数；这两个参数不能与
 `parking_sensor_debounce_count` 或 `runout_debounce_count` 共用。
+
+`sensor_trigger_grace_time` 适用于由传感器停止的 ACE 送料或回抽动作：理论
+“请求距离/速度”时间结束后，驱动在此时间内继续读取传感器。宽限期只吸收
+料盘惯性、打滑、加减速和通信延迟，不追加移动距离，也不改变送料/回料硬上限。
 
 ### 八、ACE 通信与断联保护
 

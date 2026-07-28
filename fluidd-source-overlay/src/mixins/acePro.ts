@@ -332,6 +332,8 @@ export default class AceProMixin extends StateMixin {
         this.aceProLastError = ACE_API_UNAVAILABLE_ERROR
       } else if (typeof serverMessage === 'string' && serverMessage.trim() !== '') {
         this.aceProLastError = serverMessage
+      } else if (error?.isAceCommandError === true) {
+        this.aceProLastError = error.message || `${command} 执行失败`
       } else if (status === 409) {
         this.aceProLastError = 'ACE Pro 操作被当前打印机状态拒绝（HTTP 409）。'
       } else if (typeof status === 'number' && status >= 500) {

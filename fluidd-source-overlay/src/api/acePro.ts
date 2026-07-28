@@ -7,6 +7,15 @@ export interface AceApiCommandPayload {
   params?: Record<string, string | number | boolean | number[]>;
 }
 
+export class AceApiCommandError extends Error {
+  readonly isAceCommandError = true
+
+  constructor (message: string) {
+    super(message)
+    this.name = 'AceApiCommandError'
+  }
+}
+
 function unwrapMoonrakerResult<T> (payload: any): T {
   if (payload?.result != null) {
     return payload.result as T
@@ -39,7 +48,7 @@ export async function runAceCommand (payload: AceApiCommandPayload): Promise<Rec
     const message = typeof result.error?.message === 'string'
       ? result.error.message
       : `ACE command failed: ${payload.command}`
-    throw new Error(message)
+    throw new AceApiCommandError(message)
   }
 
   return result

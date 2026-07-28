@@ -65,6 +65,7 @@ EXPECTED_DISTRIBUTED_KEYS = {
     "toolhead_to_nozzle_speed",
     "toolhead_sensor_max_feed_length",
     "extruder_sensor_timeout",
+    "sensor_trigger_grace_time",
     "ace_ready_timeout",
     "ace_stop_ready_timeout",
     "ace_request_timeout",
@@ -161,14 +162,14 @@ class AceConfigLayoutTests(unittest.TestCase):
 
         active_keys = active_ace_keys(config)
 
-        self.assertEqual(len(active_keys), 81)
+        self.assertEqual(len(active_keys), 82)
         self.assertEqual(len(active_keys), len(set(active_keys)))
         self.assertEqual(set(active_keys), EXPECTED_DISTRIBUTED_KEYS)
         self.assertGreaterEqual(config.count("☆☆☆☆☆"), 10)
 
         self.assertNotIn("disable_assist_after_toolchange", config)
 
-    def test_sensor_placeholders_expand_the_contract_to_83_and_84_keys(self):
+    def test_sensor_placeholders_expand_the_contract_to_84_and_85_keys(self):
         config = CONFIG_PATH.read_text(encoding="utf-8")
 
         with_required_sensors = config
@@ -177,7 +178,7 @@ class AceConfigLayoutTests(unittest.TestCase):
                 with_required_sensors, key
             )
         required_sensor_keys = active_ace_keys(with_required_sensors)
-        self.assertEqual(len(required_sensor_keys), 83)
+        self.assertEqual(len(required_sensor_keys), 84)
         self.assertEqual(len(required_sensor_keys), len(set(required_sensor_keys)))
         self.assertEqual(
             set(required_sensor_keys),
@@ -188,7 +189,7 @@ class AceConfigLayoutTests(unittest.TestCase):
             with_required_sensors, PARKING_SENSOR_PIN_KEY
         )
         all_sensor_keys = active_ace_keys(with_parking_sensor)
-        self.assertEqual(len(all_sensor_keys), 84)
+        self.assertEqual(len(all_sensor_keys), 85)
         self.assertEqual(len(all_sensor_keys), len(set(all_sensor_keys)))
         self.assertEqual(
             set(all_sensor_keys),
@@ -248,9 +249,9 @@ class AceConfigLayoutTests(unittest.TestCase):
             "# 五通传感器与自动探测料管长度", 1
         )[1].split("# ACE 烘干允许的最高温度。", 1)[0]
         expected_entries = {
-            "calibration_speed: 25": 1,
-            "#calibration_feed_speed: 25": 1,
-            "#calibration_retract_speed: 25": 1,
+            "calibration_speed: 50": 1,
+            "#calibration_feed_speed: 50": 1,
+            "#calibration_retract_speed: 50": 1,
             "calibration_chunk_length: 50": 1,
             "calibration_final_chunk_length: 50": 1,
         }
