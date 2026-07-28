@@ -49,7 +49,10 @@ jobs:
           bash tests/installer/test-mixed-baselines.sh
 
       - name: Verify release manifest
-        run: sha256sum -c manifest.sha256
+        run: |
+          archive_dir="$(mktemp -d)"
+          git archive HEAD | tar -x -C "$archive_dir"
+          (cd "$archive_dir" && sha256sum -c manifest.sha256)
 
   fluidd-build:
     runs-on: ubuntu-latest
@@ -92,6 +95,7 @@ jobs:
           name: fluidd-dist-linux-${{ github.sha }}
           path: fluidd-upstream/dist
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 3
 
       - name: Compare reproducible Fluidd distribution
