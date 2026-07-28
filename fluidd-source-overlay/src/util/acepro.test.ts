@@ -9,7 +9,19 @@ import {
   shouldShowAceNotice,
 } from './acepro'
 
-describe('ACEPROSV08 Fluidd adapter', () => {
+describe('Ace Pro Control Center Fluidd adapter', () => {
+  it('accepts the current driver identity', () => {
+    const state = resolveAceProApiState({
+      api_version: 1,
+      driver: 'ACE_PRO_CONTROL_CENTER',
+      connected: true,
+      slots: [],
+    })
+
+    expect(state.detected).toBe(true)
+    expect(state.connected).toBe(true)
+  })
+
   it('normalizes the single-device API including sensors and feed assist', () => {
     const state = resolveAceProApiState({
       api_version: 1,
@@ -22,6 +34,7 @@ describe('ACEPROSV08 Fluidd adapter', () => {
       sensors: {
         upper: { name: 'extruder_sensor', available: true, detected: true },
         lower: { name: 'toolhead_sensor', available: true, detected: false },
+        parking: { name: 'parking_sensor', available: true, detected: true },
       },
       slots: [
         { status: 'ready', material: 'PLA', color: { rgb: [12, 34, 56] }, temperature: 210 },
@@ -33,6 +46,7 @@ describe('ACEPROSV08 Fluidd adapter', () => {
     expect(state.feedAssistIndex).toBe(2)
     expect(state.sensors.upper.detected).toBe(true)
     expect(state.sensors.lower.detected).toBe(false)
+    expect(state.sensors.parking.detected).toBe(true)
     expect(state.slots[0].color).toEqual([12, 34, 56])
   })
 
@@ -53,11 +67,17 @@ describe('ACEPROSV08 Fluidd adapter', () => {
         valid: true,
         stale: false,
         phase: 'feed_complete',
+        mode: 'parking_sensor',
         selected_slot: 2,
         feed_completed: 1200,
         feed_upper_bound: 1205,
         retract_distance: 1035,
         parking_distance: 1035,
+        upper_to_parking_sensor_distance: 960,
+        upper_to_parking_distance: 1035,
+        parking_sensor_cleared: true,
+        parking_direction: 'retract',
+        parking_offset: 75,
         last_error: '',
       },
     })
@@ -73,6 +93,11 @@ describe('ACEPROSV08 Fluidd adapter', () => {
     expect(state.calibration.valid).toBe(true)
     expect(state.calibration.feedUpperBound).toBe(1205)
     expect(state.calibration.parkingDistance).toBe(1035)
+    expect(state.calibration.upperToParkingSensorDistance).toBe(960)
+    expect(state.calibration.upperToParkingDistance).toBe(1035)
+    expect(state.calibration.mode).toBe('parking_sensor')
+    expect(state.calibration.parkingSensorCleared).toBe(true)
+    expect(state.calibration.parkingOffset).toBe(75)
   })
 
   it('builds inventory G-code with INDEX and never the Kobra-S1 T parameter', () => {
@@ -117,11 +142,11 @@ describe('ACEPROSV08 Fluidd adapter', () => {
   })
 
   it('uses the approved safety warnings', () => {
-    expect(autoDryingWarningMessage('PLA_MIXED')).toBe(
-      '检测到 PLA 与其他材料混装，自动烘干使用 50°C 以保护 PLA；其他高温材料的烘干效果可能受限。'
+    expect(autoDryingWarningMessage('PLA_MIXED', 52)).toBe(
+      '检测到 PLA 与其他材料混装，自动烘干使用 52°C 以保护 PLA；其他材料的烘干效果可能受限。'
     )
-    expect(autoDryingWarningMessage('UNKNOWN')).toBe(
-      '检测到未知材料，将以 45°C 进行自动烘干，部分材料的烘干效果可能受限。'
+    expect(autoDryingWarningMessage('UNKNOWN', 47)).toBe(
+      '检测到未知材料，将以 47°C 进行自动烘干，烘干效果可能受限。'
     )
   })
 

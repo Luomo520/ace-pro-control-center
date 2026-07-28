@@ -6,7 +6,6 @@ import {
   autoDryingBasisLabel,
   autoDryingStatusLabel,
   autoDryingWarningMessage,
-  buildAceSetSlotGcode,
   detectAceProObjectKey,
   hasAceProConfig,
   hexToRgb,
@@ -22,6 +21,7 @@ const WAIT_REFRESH = 'acepro-refresh'
 const WAIT_SLOT_ACTION = 'acepro-slot-action'
 const WAIT_DRYER_ACTION = 'acepro-dryer-action'
 const WAIT_QUICK_ACTION = 'acepro-quick-action'
+const ACE_API_UNAVAILABLE_ERROR = 'ACE Pro 控制 API 不可用，请安装或更新 Moonraker [ace_status] 组件。'
 
 @Component
 export default class AceProMixin extends StateMixin {
@@ -118,12 +118,12 @@ export default class AceProMixin extends StateMixin {
     if (calibration.stale) return '已过期'
     if (calibration.valid) return '有效'
     const labels: Record<string, string> = {
-      idle: '未标定',
-      feeding: '正在标定送料',
-      feed_complete: '送料完成，等待回料',
-      retracting: '正在标定回料',
-      retract_complete: '回料完成，等待保存',
-      saved: '已保存',
+      idle: '未探测',
+      feeding: '正在探测送料路径',
+      feed_complete: '送料路径已探测，等待回料探测',
+      retracting: '正在探测回料路径',
+      retract_complete: '料管长度已探测，等待保存',
+      saved: '探测结果已保存',
       unavailable: '不可用',
     }
     return labels[calibration.phase] || '未标定'
@@ -240,40 +240,53 @@ export default class AceProMixin extends StateMixin {
   private async executeAceCommand (
     command: string,
     params: Record<string, string | number | boolean | number[]>,
-    wait: string,
-    fallbackGcode: string
+    wait: string
   ): Promise<boolean> {
-    if (this.aceProApiAvailable !== false) {
-      this.aceProApiWaits = [...this.aceProApiWaits, wait]
-      try {
-        await runAceCommand({ command, params })
-        this.aceProApiAvailable = true
-        this.aceProLastError = ''
-        await this.pollAceProApi()
-        return true
-      } catch (error: any) {
-        if (error?.response?.status !== 404) {
-          console.error(`ACE Pro command failed: ${command}`, error)
-          this.aceProLastError = error?.message || `${command} 执行失败`
-          return false
-        }
-        this.aceProApiAvailable = false
-        this.aceProApiStatus = null
-      } finally {
-        this.aceProApiWaits = this.aceProApiWaits.filter(item => item !== wait)
-      }
+    if (this.aceProApiAvailable === false) {
+      this.aceProLastError = ACE_API_UNAVAILABLE_ERROR
+      return false
     }
 
-    this.sendGcode(fallbackGcode, wait)
-    this.aceProLastError = ''
-    return true
+    this.aceProApiWaits = [...this.aceProApiWaits, wait]
+    try {
+      await runAceCommand({ command, params })
+      this.aceProApiAvailable = true
+      this.aceProLastError = ''
+      await this.pollAceProApi()
+      return true
+    } catch (error: any) {
+      const status = error?.response?.status
+      const responseData = error?.response?.data?.result ?? error?.response?.data
+      const serverMessage = responseData?.error?.message
+
+      if (status === 404) {
+        this.aceProApiAvailable = false
+        this.aceProApiStatus = null
+      }
+
+      if (status === 404) {
+        this.aceProLastError = ACE_API_UNAVAILABLE_ERROR
+      } else if (typeof serverMessage === 'string' && serverMessage.trim() !== '') {
+        this.aceProLastError = serverMessage
+      } else if (status === 409) {
+        this.aceProLastError = 'ACE Pro 操作被当前打印机状态拒绝（HTTP 409）。'
+      } else if (typeof status === 'number' && status >= 500) {
+        this.aceProLastError = `ACE Pro 控制服务错误（HTTP ${status}）。`
+      } else if (error?.response == null) {
+        this.aceProLastError = `无法连接 ACE Pro 控制 API：${error?.message || '网络错误'}`
+      } else {
+        this.aceProLastError = error?.message || `${command} 执行失败`
+      }
+
+      console.error(`ACE Pro command failed: ${command}`, error)
+      return false
+    } finally {
+      this.aceProApiWaits = this.aceProApiWaits.filter(item => item !== wait)
+    }
   }
 
   async refreshAcePro () {
     await this.pollAceProApi()
-    if (this.aceProApiAvailable === false) {
-      this.sendGcode('ACE_QUERY_SLOTS\nACE_ENDLESS_SPOOL_STATUS\nACE_GET_CURRENT_INDEX', WAIT_REFRESH)
-    }
   }
 
   async handleSlotPrimaryAction (slot: AceProResolvedSlot) {
@@ -284,7 +297,7 @@ export default class AceProMixin extends StateMixin {
       )
 
       if (result) {
-        await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: -1 }, WAIT_SLOT_ACTION, 'ACE_CHANGE_TOOL TOOL=-1')
+        await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: -1 }, WAIT_SLOT_ACTION)
       }
       return
     }
@@ -297,23 +310,22 @@ export default class AceProMixin extends StateMixin {
     )
 
     if (result) {
-      await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: slot.index }, WAIT_SLOT_ACTION, `ACE_CHANGE_TOOL TOOL=${slot.index}`)
+      await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: slot.index }, WAIT_SLOT_ACTION)
     }
   }
 
   async saveSlot (index: number, material: string, colorHex: string, temperature: number) {
     const color = this.aceHexColorToRgb(colorHex)
-    const gcode = buildAceSetSlotGcode(index, material, color, temperature)
     await this.executeAceCommand('ACE_SET_SLOT', {
       INDEX: index,
       MATERIAL: material.trim().toUpperCase(),
       COLOR: color,
       TEMP: Math.round(temperature),
-    }, WAIT_SLOT_ACTION, gcode)
+    }, WAIT_SLOT_ACTION)
   }
 
   async clearSlot (index: number) {
-    await this.executeAceCommand('ACE_SET_SLOT', { INDEX: index, EMPTY: 1 }, WAIT_SLOT_ACTION, `ACE_SET_SLOT INDEX=${index} EMPTY=1`)
+    await this.executeAceCommand('ACE_SET_SLOT', { INDEX: index, EMPTY: 1 }, WAIT_SLOT_ACTION)
   }
 
   async unloadCurrentSlot () {
@@ -322,15 +334,14 @@ export default class AceProMixin extends StateMixin {
       { title: 'ACE Pro 卸载耗材', color: 'card-heading', icon: '$warning' }
     )
     if (!result) return
-    await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: -1 }, WAIT_QUICK_ACTION, 'ACE_CHANGE_TOOL TOOL=-1')
+    await this.executeAceCommand('ACE_CHANGE_TOOL', { TOOL: -1 }, WAIT_QUICK_ACTION)
   }
 
   async abortToolchange () {
     await this.executeAceCommand(
       'ACE_ABORT_TOOLCHANGE',
       {},
-      WAIT_QUICK_ACTION,
-      'ACE_ABORT_TOOLCHANGE'
+      WAIT_QUICK_ACTION
     )
     await this.pollAceProApi()
   }
@@ -348,19 +359,19 @@ export default class AceProMixin extends StateMixin {
   }
 
   async saveInventory () {
-    await this.executeAceCommand('ACE_SAVE_INVENTORY', {}, WAIT_QUICK_ACTION, 'ACE_SAVE_INVENTORY')
+    await this.executeAceCommand('ACE_SAVE_INVENTORY', {}, WAIT_QUICK_ACTION)
   }
 
   async toggleEndlessSpool (enabled: boolean) {
     const command = enabled ? 'ACE_ENABLE_ENDLESS_SPOOL' : 'ACE_DISABLE_ENDLESS_SPOOL'
-    await this.executeAceCommand(command, {}, WAIT_SLOT_ACTION, command)
+    await this.executeAceCommand(command, {}, WAIT_SLOT_ACTION)
   }
 
   async toggleAceProAutoDrying (enabled: boolean) {
     const autoDrying = this.aceProState.autoDrying
     if (enabled && (autoDrying.reason === 'PLA_MIXED' || autoDrying.reason === 'UNKNOWN')) {
       const accepted = await this.$confirm(
-        autoDryingWarningMessage(autoDrying.reason),
+        autoDryingWarningMessage(autoDrying.reason, autoDrying.temperature),
         { title: 'ACE Pro 自动烘干', color: 'card-heading', icon: '$warning' }
       )
       if (!accepted) return
@@ -368,22 +379,22 @@ export default class AceProMixin extends StateMixin {
     const command = enabled
       ? 'ACE_ENABLE_AUTO_DRYING'
       : 'ACE_DISABLE_AUTO_DRYING'
-    await this.executeAceCommand(command, {}, WAIT_DRYER_ACTION, command)
+    await this.executeAceCommand(command, {}, WAIT_DRYER_ACTION)
   }
 
   async startDrying (temperature: number, duration: number) {
     const temp = Math.round(temperature)
     const minutes = Math.round(duration)
-    await this.executeAceCommand('ACE_START_DRYING', { TEMP: temp, DURATION: minutes }, WAIT_DRYER_ACTION, `ACE_START_DRYING TEMP=${temp} DURATION=${minutes}`)
+    await this.executeAceCommand('ACE_START_DRYING', { TEMP: temp, DURATION: minutes }, WAIT_DRYER_ACTION)
   }
 
   async stopDrying () {
-    await this.executeAceCommand('ACE_STOP_DRYING', {}, WAIT_DRYER_ACTION, 'ACE_STOP_DRYING')
+    await this.executeAceCommand('ACE_STOP_DRYING', {}, WAIT_DRYER_ACTION)
   }
 
   async toggleFeedAssist (index: number, enabled: boolean) {
     const command = enabled ? 'ACE_ENABLE_FEED_ASSIST' : 'ACE_DISABLE_FEED_ASSIST'
-    await this.executeAceCommand(command, { INDEX: index }, WAIT_SLOT_ACTION, `${command} INDEX=${index}`)
+    await this.executeAceCommand(command, { INDEX: index }, WAIT_SLOT_ACTION)
   }
 
   async changeSpool (index: number) {
@@ -392,7 +403,7 @@ export default class AceProMixin extends StateMixin {
       { title: 'ACE Pro 换卷', color: 'card-heading', icon: '$warning' }
     )
     if (!result) return
-    await this.executeAceCommand('ACE_CHANGE_SPOOL', { INDEX: index }, WAIT_SLOT_ACTION, `ACE_CHANGE_SPOOL INDEX=${index}`)
+    await this.executeAceCommand('ACE_CHANGE_SPOOL', { INDEX: index, CONFIRM: 1 }, WAIT_SLOT_ACTION)
   }
 
   async manualFeed (index: number, length: number, speed: number) {
@@ -405,8 +416,7 @@ export default class AceProMixin extends StateMixin {
     await this.executeAceCommand(
       'ACE_FEED',
       params,
-      WAIT_QUICK_ACTION,
-      `ACE_FEED INDEX=${params.INDEX} LENGTH=${params.LENGTH} SPEED=${params.SPEED} CONFIRM=1`
+      WAIT_QUICK_ACTION
     )
   }
 
@@ -420,8 +430,7 @@ export default class AceProMixin extends StateMixin {
     await this.executeAceCommand(
       'ACE_RETRACT',
       params,
-      WAIT_QUICK_ACTION,
-      `ACE_RETRACT INDEX=${params.INDEX} LENGTH=${params.LENGTH} SPEED=${params.SPEED} CONFIRM=1`
+      WAIT_QUICK_ACTION
     )
   }
 
@@ -434,50 +443,59 @@ export default class AceProMixin extends StateMixin {
     await this.executeAceCommand(
       'ACE_PRELOAD',
       { INDEX: index, CONFIRM: 1 },
-      WAIT_QUICK_ACTION,
-      `ACE_PRELOAD INDEX=${index} CONFIRM=1`
+      WAIT_QUICK_ACTION
     )
   }
 
   async calibrateFeed (index: number) {
     const result = await this.$confirm(
-      `确认使用 T${index} 开始送料距离标定？开始前上下传感器必须均无料。`,
-      { title: 'ACE Pro 距离标定', color: 'card-heading', icon: '$warning' }
+      `确认使用 T${index} 开始自动探测料管长度？开始前上下传感器必须均无料。`,
+      { title: 'ACE Pro 自动探测料管长度', color: 'card-heading', icon: '$warning' }
     )
     if (!result) return
     await this.executeAceCommand(
       'ACE_CALIBRATE_FEED',
       { INDEX: index, CONFIRM: 1 },
-      WAIT_QUICK_ACTION,
-      `ACE_CALIBRATE_FEED INDEX=${index} CONFIRM=1`
+      WAIT_QUICK_ACTION
+    )
+  }
+
+  async calibrate (index: number) {
+    const result = await this.$confirm(
+      '确认使用 T' + index + ' 自动探测料管长度并完成回料定位？开始前上下方及五通传感器必须均无料。',
+      { title: 'ACE Pro 自动探测料管长度', color: 'card-heading', icon: '$warning' }
+    )
+    if (!result) return
+    await this.executeAceCommand(
+      'ACE_CALIBRATE',
+      { INDEX: index, CONFIRM: 1 },
+      WAIT_QUICK_ACTION
     )
   }
 
   async calibrateRetract () {
     const result = await this.$confirm(
-      '确认继续回料距离标定，并将耗材回收到估算的五通预停放位置？',
-      { title: 'ACE Pro 距离标定', color: 'card-heading', icon: '$warning' }
+      '确认继续探测回料路径，并将耗材回收到五通预停放位置？',
+      { title: 'ACE Pro 自动探测料管长度', color: 'card-heading', icon: '$warning' }
     )
     if (!result) return
     await this.executeAceCommand(
       'ACE_CALIBRATE_RETRACT',
       { CONFIRM: 1 },
-      WAIT_QUICK_ACTION,
-      'ACE_CALIBRATE_RETRACT CONFIRM=1'
+      WAIT_QUICK_ACTION
     )
   }
 
   async saveCalibration () {
     const result = await this.$confirm(
-      '确认保存当前送料和回料标定结果？配置中的料管长度或停车余量变化后需要重新标定。',
-      { title: 'ACE Pro 保存标定', color: 'card-heading', icon: '$warning' }
+      '确认保存自动探测的料管长度和停放距离？配置中的管长或停车余量变化后需要重新探测。',
+      { title: 'ACE Pro 保存探测结果', color: 'card-heading', icon: '$warning' }
     )
     if (!result) return
     await this.executeAceCommand(
       'ACE_CALIBRATION_SAVE',
       { CONFIRM: 1 },
-      WAIT_QUICK_ACTION,
-      'ACE_CALIBRATION_SAVE CONFIRM=1'
+      WAIT_QUICK_ACTION
     )
   }
 
@@ -485,8 +503,7 @@ export default class AceProMixin extends StateMixin {
     await this.executeAceCommand(
       'ACE_CALIBRATION_CANCEL',
       {},
-      WAIT_QUICK_ACTION,
-      'ACE_CALIBRATION_CANCEL'
+      WAIT_QUICK_ACTION
     )
   }
 
@@ -499,8 +516,7 @@ export default class AceProMixin extends StateMixin {
     await this.executeAceCommand(
       'ACE_FULL_UNLOAD',
       { INDEX: index, CONFIRM: 1 },
-      WAIT_QUICK_ACTION,
-      `ACE_FULL_UNLOAD INDEX=${index} CONFIRM=1`
+      WAIT_QUICK_ACTION
     )
   }
 
@@ -508,8 +524,7 @@ export default class AceProMixin extends StateMixin {
     await this.executeAceCommand(
       'ACE_TEST_RUNOUT_SENSOR',
       {},
-      WAIT_QUICK_ACTION,
-      'ACE_TEST_RUNOUT_SENSOR'
+      WAIT_QUICK_ACTION
     )
     await this.pollAceProApi()
   }

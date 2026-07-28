@@ -22,7 +22,7 @@ test('standalone client sends only strict switch commands', async () => {
   assert.match(source, /ACE_DISABLE_AUTO_DRYING/)
   assert.doesNotMatch(source, /ACE_ENABLE_AUTO_DRYING TEMP=/)
   assert.match(source, /PLA 与其他材料混装/)
-  assert.match(source, /未知材料，将以 45°C/)
+  assert.match(source, /未知材料，将以 \$\{temperatureText\}/)
 })
 
 

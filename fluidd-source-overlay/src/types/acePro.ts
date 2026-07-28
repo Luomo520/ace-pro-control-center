@@ -5,6 +5,12 @@ export interface AceProInventorySlot {
   temp: number;
 }
 
+export interface AceProMaterialProfile {
+  name: string;
+  dryingTemperature: number;
+  materialTemperature: number;
+}
+
 export interface AceProHardwareSlot {
   index: number;
   status: string;
@@ -66,6 +72,7 @@ export interface AceProCalibrationState {
   valid: boolean;
   stale: boolean;
   phase: string;
+  mode: string;
   selectedSlot: number;
   feedCompleted: number;
   feedUpperBound: number;
@@ -73,6 +80,12 @@ export interface AceProCalibrationState {
   sensorClearUpperBound: number;
   retractDistance: number;
   parkingDistance: number;
+  parkingSensorCleared: boolean;
+  parkingDirection: string;
+  parkingOffset: number;
+  upperToParkingSensorDistance: number;
+  upperToParkingDistance: number;
+  bowdenTubeLength: number;
   lastError: string;
 }
 
@@ -83,6 +96,8 @@ export interface AceProResolvedSlot {
   hardwareStatus: string;
   material: string;
   temperature: number;
+  dryingTemperature: number;
+  profileKnown: boolean;
   color: [number, number, number];
   sku: string;
   type: string;
@@ -115,6 +130,7 @@ export interface AceProResolvedState {
   sensors: {
     upper: AceProSensorState;
     lower: AceProSensorState;
+    parking: AceProSensorState;
   };
   printing: boolean;
   warnings: string[];
@@ -128,5 +144,6 @@ export interface AceProResolvedState {
   endlessSpool: AceProEndlessSpoolState;
   autoDrying: AceProAutoDryingState;
   dryer: AceProDryerStatus;
+  materialProfiles: Record<string, AceProMaterialProfile>;
   slots: AceProResolvedSlot[];
 }

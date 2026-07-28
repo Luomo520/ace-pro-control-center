@@ -80,6 +80,10 @@
         <span>SKU</span>
         <strong>{{ slot.sku || '--' }}</strong>
       </div>
+      <div class="acepro-slot-card__meta-row">
+        <span>烘干温度</span>
+        <strong>{{ dryingTemperatureText }}</strong>
+      </div>
       <div class="acepro-slot-card__meta-row acepro-slot-card__meta-row--position">
         <span>耗材位置</span>
         <strong>{{ positionText }}</strong>
@@ -97,7 +101,7 @@
             hide-details
             label="材料"
             :disabled="disabled"
-            @input="markDirty"
+            @input="onMaterialInput"
           />
         </v-col>
         <v-col cols="5">
@@ -108,7 +112,7 @@
             hide-details
             type="number"
             min="0"
-            label="温度"
+            label="耗材温度"
             suffix="C"
             :disabled="disabled"
             @input="markDirty"
@@ -192,7 +196,7 @@
 
 <script lang="ts">
 import { Component, Prop, Vue, Watch } from 'vue-property-decorator'
-import type { AceProResolvedSlot } from '@/types/acePro'
+import type { AceProMaterialProfile, AceProResolvedSlot } from '@/types/acePro'
 
 @Component
 export default class AceProSlotCard extends Vue {
@@ -211,12 +215,15 @@ export default class AceProSlotCard extends Vue {
   @Prop({ type: Boolean, default: false })
   readonly assistActive!: boolean
 
+  @Prop({ type: Object, default: () => ({}) })
+  readonly materialProfiles!: Record<string, AceProMaterialProfile>
+
   localMaterial = ''
   localTemperature = 0
   localColor = '#000000'
   isDirty = false
 
-  readonly materialOptions = [
+  readonly defaultMaterialOptions = [
     'PLA',
     'PLA+',
     'PETG',
@@ -237,6 +244,14 @@ export default class AceProSlotCard extends Vue {
     'HIPS',
   ]
 
+  get materialOptions (): string[] {
+    const configured = Object.entries(this.materialProfiles)
+      .filter(([key]) => !key.startsWith('__'))
+      .map(([, profile]) => profile.name)
+      .filter(Boolean)
+    return configured.length > 0 ? configured : this.defaultMaterialOptions
+  }
+
   mounted () {
     this.syncFromProps()
   }
@@ -250,6 +265,16 @@ export default class AceProSlotCard extends Vue {
 
   get displayMaterial (): string {
     return this.slot.material || '未配置'
+  }
+
+  get selectedMaterialProfile (): AceProMaterialProfile | undefined {
+    return this.materialProfiles[this.localMaterial.trim().toUpperCase()]
+  }
+
+  get dryingTemperatureText (): string {
+    const temperature = this.selectedMaterialProfile?.dryingTemperature ||
+      this.slot.dryingTemperature
+    return temperature > 0 ? `${temperature}°C` : '--'
   }
 
   get statusText (): string {
@@ -330,6 +355,14 @@ export default class AceProSlotCard extends Vue {
 
   markDirty () {
     this.isDirty = true
+  }
+
+  onMaterialInput () {
+    this.markDirty()
+    const temperature = this.selectedMaterialProfile?.materialTemperature
+    if (temperature != null && temperature > 0) {
+      this.localTemperature = temperature
+    }
   }
 
   private syncFromProps () {

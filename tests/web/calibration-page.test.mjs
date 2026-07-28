@@ -7,12 +7,12 @@ test('standalone page matches the Fluidd calibration and preload controls', asyn
   const html = await readFile('ace_status_integration/web/ace.html', 'utf8')
 
   for (const label of [
-    '距离标定',
+    '自动探测料管长度',
     '冷态预装载',
-    '送料结果',
-    '回料结果',
-    '保存标定',
-    '取消标定',
+    '上方传感器 → 五通传感器',
+    '五通传感器',
+    '保存探测结果',
+    '取消探测',
     '完全卸载',
     '紧急停止',
   ]) {
@@ -30,6 +30,7 @@ test('standalone page sends the complete strict ACE command set', async () => {
   for (const command of [
     'ACE_PRELOAD',
     'ACE_CALIBRATE_FEED',
+    'ACE_CALIBRATE',
     'ACE_CALIBRATE_RETRACT',
     'ACE_CALIBRATION_SAVE',
     'ACE_CALIBRATION_CANCEL',
@@ -43,6 +44,10 @@ test('standalone page sends the complete strict ACE command set', async () => {
   assert.doesNotMatch(source, /ACE_ACK_TOOLCHANGE/)
   assert.match(source, /ACE_FEED[\s\S]*CONFIRM:\s*1/)
   assert.match(source, /ACE_RETRACT[\s\S]*CONFIRM:\s*1/)
+  assert.match(source, /calibrationParkingDistanceLabel\(\)/)
+  assert.match(source, /calibrationUpperToParkingSensorResult\(\)/)
+  assert.match(source, /calibrationUpperToParkingResult\(\)/)
+  assert.match(source, /ACE_CALIBRATE[\s\S]*INDEX: index[\s\S]*CONFIRM: 1/)
 })
 
 
@@ -56,6 +61,7 @@ test('standalone movement methods require a fresh browser confirmation', async (
     'changeToolForInstance',
     'preloadSlot',
     'calibrateFeed',
+    'calibrate',
     'calibrateRetract',
     'saveCalibration',
     'fullUnload',
@@ -77,4 +83,6 @@ test('standalone status and calibration panels remain compact in the dark theme'
   assert.match(css, /\.card-row\s*\{[^}]*align-items:\s*start/s)
   assert.match(css, /\.calibration-status-item\s*\{[^}]*background:\s*#151921/s)
   assert.match(css, /\.calibration-slot-select select\s*\{[^}]*background:\s*#0f1216/s)
+  assert.match(html, /五通后传感器/)
+  assert.doesNotMatch(html, /deviceInfo\.rfid/)
 })

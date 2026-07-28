@@ -6,6 +6,7 @@ import type {
   AceProEndlessSpoolState,
   AceProHardwareSlot,
   AceProInventorySlot,
+  AceProMaterialProfile,
   AceProResolvedSlot,
   AceProResolvedState,
   AceProSensorState,
@@ -125,6 +126,28 @@ function resolveWarnings (value: unknown): string[] {
     : []
 }
 
+function resolveMaterialProfiles (
+  value: unknown,
+  fallback: Record<string, AceProMaterialProfile> = {}
+): Record<string, AceProMaterialProfile> {
+  if (!isObject(value)) return fallback
+
+  return Object.entries(value).reduce<Record<string, AceProMaterialProfile>>(
+    (profiles, [rawKey, rawValue]) => {
+      if (!isObject(rawValue) || rawKey.toLowerCase() === '__meta__') return profiles
+      const key = rawKey.startsWith('__') ? rawKey.toLowerCase() : rawKey.trim().toUpperCase()
+      if (!key) return profiles
+      profiles[key] = {
+        name: safeString(rawValue.name, rawKey),
+        dryingTemperature: safeNumber(rawValue.drying_temperature),
+        materialTemperature: safeNumber(rawValue.material_temperature),
+      }
+      return profiles
+    },
+    {}
+  )
+}
+
 function normalizeSlotPosition (value: unknown): AceProSlotPosition {
   return typeof value === 'string' && SLOT_POSITIONS.includes(value as AceProSlotPosition)
     ? value as AceProSlotPosition
@@ -152,6 +175,7 @@ function resolveCalibration (
       raw.phase,
       fallback?.phase ?? (available ? 'idle' : 'unavailable')
     ),
+    mode: safeString(raw.mode, fallback?.mode ?? 'legacy_feed'),
     selectedSlot: safeNumber(raw.selected_slot, fallback?.selectedSlot ?? -1),
     feedCompleted: safeNumber(raw.feed_completed, fallback?.feedCompleted ?? 0),
     feedUpperBound: safeNumber(raw.feed_upper_bound, fallback?.feedUpperBound ?? 0),
@@ -165,6 +189,24 @@ function resolveCalibration (
     ),
     retractDistance: safeNumber(raw.retract_distance, fallback?.retractDistance ?? 0),
     parkingDistance: safeNumber(raw.parking_distance, fallback?.parkingDistance ?? 0),
+    parkingSensorCleared: safeBoolean(
+      raw.parking_sensor_cleared,
+      fallback?.parkingSensorCleared ?? false
+    ),
+    parkingDirection: safeString(
+      raw.parking_direction,
+      fallback?.parkingDirection ?? ''
+    ),
+    parkingOffset: safeNumber(raw.parking_offset, fallback?.parkingOffset ?? 0),
+    upperToParkingSensorDistance: safeNumber(
+      raw.upper_to_parking_sensor_distance,
+      fallback?.upperToParkingSensorDistance ?? 0
+    ),
+    upperToParkingDistance: safeNumber(
+      raw.upper_to_parking_distance,
+      fallback?.upperToParkingDistance ?? 0
+    ),
+    bowdenTubeLength: safeNumber(raw.bowden_tube_length, fallback?.bowdenTubeLength ?? 0),
     lastError: safeString(raw.last_error, fallback?.lastError ?? ''),
   }
 }
@@ -226,12 +268,13 @@ export function autoDryingBasisLabel (state: AceProAutoDryingState): string {
   return state.temperature > 0 ? `${state.temperature}°C · ${basis}` : basis
 }
 
-export function autoDryingWarningMessage (reason: AceProAutoDryingReason): string {
+export function autoDryingWarningMessage (reason: AceProAutoDryingReason, temperature = 0): string {
+  const temperatureText = temperature > 0 ? `${temperature}°C` : '配置温度'
   if (reason === 'PLA_MIXED') {
-    return '检测到 PLA 与其他材料混装，自动烘干使用 50°C 以保护 PLA；其他高温材料的烘干效果可能受限。'
+    return `检测到 PLA 与其他材料混装，自动烘干使用 ${temperatureText} 以保护 PLA；其他材料的烘干效果可能受限。`
   }
   if (reason === 'UNKNOWN') {
-    return '检测到未知材料，将以 45°C 进行自动烘干，部分材料的烘干效果可能受限。'
+    return `检测到未知材料，将以 ${temperatureText} 进行自动烘干，烘干效果可能受限。`
   }
   return ''
 }
@@ -356,6 +399,7 @@ export function resolveAceProSlots (printerState: PrinterState): AceProResolvedS
   const hardwareSlots = resolveAceProHardwareSlots(printerState)
   const currentIndex = resolveAceProCurrentIndex(printerState)
   const acePro = getAceProObject(printerState)
+  const materialProfiles = resolveMaterialProfiles(acePro?.material_profiles)
   const variables = getAceProVariables(printerState)
   const slotPositions = resolveSlotPositions(
     acePro?.slot_positions ?? variables.ace_slot_positions
@@ -366,6 +410,7 @@ export function resolveAceProSlots (printerState: PrinterState): AceProResolvedS
     const material = inventorySlot.material || hardwareSlot.type || ''
     const color = inventorySlot.status === 'ready' ? inventorySlot.color : hardwareSlot.color
     const ready = inventorySlot.status === 'ready' || hardwareSlot.status === 'ready'
+    const profile = materialProfiles[material.trim().toUpperCase()]
 
     return {
       index,
@@ -373,7 +418,9 @@ export function resolveAceProSlots (printerState: PrinterState): AceProResolvedS
       inventoryStatus: inventorySlot.status,
       hardwareStatus: hardwareSlot.status,
       material,
-      temperature: inventorySlot.temp,
+      temperature: inventorySlot.temp || profile?.materialTemperature || 0,
+      dryingTemperature: profile?.dryingTemperature || 0,
+      profileKnown: profile != null,
       color,
       sku: hardwareSlot.sku ?? '',
       type: hardwareSlot.type ?? '',
@@ -393,6 +440,7 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
     acePro?.slot_positions ?? variables.ace_slot_positions
   )
   const currentIndex = resolveAceProCurrentIndex(printerState)
+  const materialProfiles = resolveMaterialProfiles(acePro?.material_profiles)
 
   return {
     detected,
@@ -421,6 +469,10 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
     sensors: {
       upper: resolveSensor(printerState, 'extruder_sensor'),
       lower: resolveSensor(printerState, 'toolhead_sensor'),
+      parking: resolveApiSensor(
+        acePro?.parking_sensor,
+        resolveSensor({}, 'parking_sensor')
+      ),
     },
     printing: safeString(printerState.print_stats?.state).toLowerCase() === 'printing',
     warnings: [],
@@ -434,6 +486,7 @@ export function resolveAceProState (printerState: PrinterState): AceProResolvedS
     endlessSpool: resolveAceProEndlessSpool(printerState),
     autoDrying: resolveAutoDrying(acePro?.auto_drying),
     dryer: resolveAceProDryer(printerState),
+    materialProfiles,
     slots,
   }
 }
@@ -442,7 +495,14 @@ export function resolveAceProApiState (
   payload: Record<string, any>,
   fallback?: AceProResolvedState
 ): AceProResolvedState {
-  if (payload.api_version === 1 && payload.driver === 'ACEPROSV08') {
+  if (
+    payload.api_version === 1 &&
+    ['ACE_PRO_CONTROL_CENTER', 'ACEPROSV08'].includes(payload.driver)
+  ) {
+    const materialProfiles = resolveMaterialProfiles(
+      payload.material_profiles,
+      fallback?.materialProfiles
+    )
     const apiSlots = Array.isArray(payload.slots) ? payload.slots : []
     const slots = Array.from({ length: 4 }, (_, index): AceProResolvedSlot => {
       const slot = isObject(apiSlots[index]) ? apiSlots[index] : {}
@@ -455,7 +515,9 @@ export function resolveAceProApiState (
         inventoryStatus: status,
         hardwareStatus: status,
         material: safeString(slot.material),
-        temperature: safeNumber(slot.temperature),
+        temperature: safeNumber(slot.material_temperature ?? slot.temperature),
+        dryingTemperature: safeNumber(slot.drying_temperature),
+        profileKnown: safeBoolean(slot.profile_known, false),
         color: normalizeRgb(colorSource),
         sku: '',
         type: safeString(slot.material),
@@ -470,6 +532,7 @@ export function resolveAceProApiState (
     const sensors = isObject(payload.sensors) ? payload.sensors : {}
     const fallbackUpper = fallback?.sensors.upper ?? resolveSensor({}, 'extruder_sensor')
     const fallbackLower = fallback?.sensors.lower ?? resolveSensor({}, 'toolhead_sensor')
+    const fallbackParking = fallback?.sensors.parking ?? resolveSensor({}, 'parking_sensor')
     const slotPositions = resolveSlotPositions(payload.slot_positions)
     const currentIndex = safeNumber(payload.current_tool, -1)
 
@@ -500,6 +563,7 @@ export function resolveAceProApiState (
       sensors: {
         upper: resolveApiSensor(sensors.upper, fallbackUpper),
         lower: resolveApiSensor(sensors.lower, fallbackLower),
+        parking: resolveApiSensor(sensors.parking, fallbackParking),
       },
       printing: safeBoolean(payload.printing, false),
       warnings: resolveWarnings(payload.warnings),
@@ -522,6 +586,7 @@ export function resolveAceProApiState (
         duration: safeNumber(dryer.duration_minutes),
         remain_time: safeNumber(dryer.remaining_minutes),
       },
+      materialProfiles,
       slots,
     }
   }
@@ -537,6 +602,10 @@ export function resolveAceProApiState (
     : rawRemainTime
   const apiSlots = Array.isArray(payload.slots) ? payload.slots : []
   const currentIndex = safeNumber(manager.current_index, fallback?.currentIndex ?? -1)
+  const materialProfiles = resolveMaterialProfiles(
+    payload.material_profiles,
+    fallback?.materialProfiles
+  )
 
   const slots = Array.from({ length: 4 }, (_, index): AceProResolvedSlot => {
     const slot = isObject(apiSlots[index]) ? apiSlots[index] : {}
@@ -551,6 +620,14 @@ export function resolveAceProApiState (
       hardwareStatus: status,
       material: material === 'Unknown' ? '' : material,
       temperature: safeNumber(slot.temp, fallbackSlot?.temperature ?? 0),
+      dryingTemperature: safeNumber(
+        slot.drying_temperature,
+        fallbackSlot?.dryingTemperature ?? 0
+      ),
+      profileKnown: safeBoolean(
+        slot.profile_known,
+        fallbackSlot?.profileKnown ?? false
+      ),
       color: slot.color == null ? (fallbackSlot?.color ?? [...EMPTY_COLOR]) : normalizeRgb(slot.color),
       sku: safeString(slot.sku, fallbackSlot?.sku ?? ''),
       type: safeString(slot.type, fallbackSlot?.type ?? ''),
@@ -589,6 +666,7 @@ export function resolveAceProApiState (
     sensors: fallback?.sensors ?? {
       upper: resolveSensor({}, 'extruder_sensor'),
       lower: resolveSensor({}, 'toolhead_sensor'),
+      parking: resolveSensor({}, 'parking_sensor'),
     },
     printing: safeBoolean(payload.printing, fallback?.printing ?? false),
     warnings: resolveWarnings(payload.warnings),
@@ -619,6 +697,7 @@ export function resolveAceProApiState (
       duration: dryerDuration,
       remain_time: remainTime,
     },
+    materialProfiles,
     slots,
   }
 }

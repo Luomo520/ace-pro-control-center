@@ -7,3 +7,5 @@ __pycache__/
 .superpowers/
 test-results/
 release-assets-v*/
+.temporary/
+.playwright-cli/

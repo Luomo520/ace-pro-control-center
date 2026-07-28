@@ -9,7 +9,7 @@ createApp({
             translations: {
                 zh: {
                     header: {
-                        title: 'ACE Pro 控制面板',
+                        title: 'ACE Pro 管理中心',
                         connectionLabel: '连接状态',
                         connected: '已连接',
                         disconnected: '未连接',
@@ -161,7 +161,8 @@ createApp({
             },
             sensors: {
                 upper: { name: 'extruder_sensor', available: false, detected: false },
-                lower: { name: 'toolhead_sensor', available: false, detected: false }
+                lower: { name: 'toolhead_sensor', available: false, detected: false },
+                parking: { name: 'parking_sensor', available: false, detected: false }
             },
             endlessSpool: {
                 enabled: false,
@@ -190,6 +191,7 @@ createApp({
                 valid: false,
                 stale: false,
                 phase: 'unavailable',
+                mode: 'legacy_feed',
                 selected_slot: -1,
                 feed_completed: 0,
                 feed_upper_bound: 0,
@@ -197,6 +199,11 @@ createApp({
                 sensor_clear_upper_bound: 0,
                 retract_distance: 0,
                 parking_distance: 0,
+                parking_sensor_cleared: false,
+                parking_direction: '',
+                parking_offset: 0,
+                upper_to_parking_sensor_distance: 0,
+                upper_to_parking_distance: 0,
                 last_error: ''
             },
             calibrationSlot: 0,
@@ -223,6 +230,7 @@ createApp({
             instancesPanels: [],
             colorPresets: ['#ff0000', '#00ff00', '#0000ff', '#ff9900', '#ffff00', '#ff00ff', '#00ffff', '#ffffff', '#808080', '#000000'],
             colorPickerTarget: null,
+            materialProfiles: {},
             materialOptions: {
                 'PLA': 200,
                 'PETG': 235,
@@ -504,9 +512,10 @@ createApp({
 
         dryerTemperatureForMaterial(material) {
             const normalized = String(material || '').trim().toUpperCase();
-            if (normalized.startsWith('ABS') || normalized.startsWith('PETG')) return 60;
-            if (normalized.startsWith('PAHTCF') || normalized.startsWith('PETCF') || normalized.startsWith('PEEK')) return 60;
-            return 45;
+            const profile = this.materialProfiles[normalized];
+            return Number(profile?.drying_temperature) > 0
+                ? Number(profile.drying_temperature)
+                : 45;
         },
 
         syncDryingTemperature() {
@@ -524,6 +533,22 @@ createApp({
             if (!data || typeof data !== 'object') {
                 console.warn('Invalid status data:', data);
                 return;
+            }
+
+            if (data.material_profiles && typeof data.material_profiles === 'object') {
+                this.materialProfiles = data.material_profiles;
+                const configuredOptions = {};
+                Object.entries(data.material_profiles).forEach(([key, profile]) => {
+                    if (key.startsWith('__') || !profile || typeof profile !== 'object') return;
+                    const name = String(profile.name || key).trim();
+                    const temperature = Number(profile.material_temperature);
+                    if (name && Number.isFinite(temperature) && temperature > 0) {
+                        configuredOptions[name] = temperature;
+                    }
+                });
+                if (Object.keys(configuredOptions).length > 0) {
+                    this.materialOptions = configuredOptions;
+                }
             }
 
             // Sync active global tool from manager status when provided.
@@ -617,6 +642,7 @@ createApp({
             if (data.sensors && typeof data.sensors === 'object') {
                 this.sensors.upper = { ...this.sensors.upper, ...(data.sensors.upper || {}) };
                 this.sensors.lower = { ...this.sensors.lower, ...(data.sensors.lower || {}) };
+                this.sensors.parking = { ...this.sensors.parking, ...(data.sensors.parking || {}) };
             }
             if (data.endless_spool && typeof data.endless_spool === 'object') {
                 this.endlessSpool = { ...this.endlessSpool, ...data.endless_spool };
@@ -712,7 +738,12 @@ createApp({
                             status: slot.status || 'unknown',
                             type: slot.type || slot.material || '',
                             material: slot.material || slot.type || '',
-                            temp: typeof slot.temp === 'number' ? slot.temp : 0,
+                            temp: typeof slot.material_temperature === 'number'
+                                ? slot.material_temperature
+                                : (typeof slot.temp === 'number' ? slot.temp : 0),
+                            drying_temperature: typeof slot.drying_temperature === 'number'
+                                ? slot.drying_temperature
+                                : 0,
                             color: Array.isArray(slot.color) ? slot.color : [0, 0, 0],
                             hex: this.isSlotHexEditing(item.index, slot.index)
                                 ? this.getPreviousHex(prevPanel, slot.index) || this.getColorHex(slot.color)
@@ -742,7 +773,12 @@ createApp({
                         hex: this.isSlotHexEditing(this.selectedInstance, slot.index)
                             ? (this.slots.find(s => s.index === slot.index)?.hex || this.getColorHex(slot.color))
                             : this.getColorHex(slot.color),
-                        temp: typeof slot.temp === 'number' ? slot.temp : (typeof slot.temperature === 'number' ? slot.temperature : 0),
+                        temp: typeof slot.material_temperature === 'number'
+                            ? slot.material_temperature
+                            : (typeof slot.temp === 'number' ? slot.temp : (typeof slot.temperature === 'number' ? slot.temperature : 0)),
+                        drying_temperature: typeof slot.drying_temperature === 'number'
+                            ? slot.drying_temperature
+                            : 0,
                         sku: slot.sku || '',
                         rfid: slot.rfid !== undefined ? slot.rfid : 0,
                         position: slot.position || this.slotPositions[slot.index] || 'unknown'
@@ -853,7 +889,7 @@ createApp({
 
         async changeSpool(index) {
             if (!window.confirm(`确认回抽并释放料槽 ${index + 1}？`)) return;
-            await this.executeCommand('ACE_CHANGE_SPOOL', { INDEX: index });
+            await this.executeCommand('ACE_CHANGE_SPOOL', { INDEX: index, CONFIRM: 1 });
         },
 
         async toggleEndlessSpool() {
@@ -870,9 +906,13 @@ createApp({
         async toggleAutoDrying() {
             const enabling = !this.autoDrying.enabled;
             if (enabling && ['PLA_MIXED', 'UNKNOWN'].includes(this.autoDrying.reason)) {
+                const temperature = Number(this.autoDrying.temperature);
+                const temperatureText = Number.isFinite(temperature) && temperature > 0
+                    ? `${temperature}°C`
+                    : '配置温度';
                 const message = this.autoDrying.reason === 'PLA_MIXED'
-                    ? '检测到 PLA 与其他材料混装，自动烘干使用 50°C 以保护 PLA；其他高温材料的烘干效果可能受限。'
-                    : '检测到未知材料，将以 45°C 进行自动烘干，部分材料的烘干效果可能受限。';
+                    ? `检测到 PLA 与其他材料混装，自动烘干使用 ${temperatureText} 以保护 PLA；其他材料的烘干效果可能受限。`
+                    : `检测到未知材料，将以 ${temperatureText} 进行自动烘干，烘干效果可能受限。`;
                 if (!window.confirm(message)) return;
             }
             const command = enabling
@@ -1065,17 +1105,22 @@ createApp({
         },
 
         async calibrateFeed(index) {
-            if (!window.confirm(`确认使用 T${index} 开始送料距离标定？开始前上下传感器必须均无料。`)) return;
+            if (!window.confirm(`确认使用 T${index} 开始自动探测料管长度？开始前上下传感器必须均无料。`)) return;
             await this.executeCommand('ACE_CALIBRATE_FEED', { INDEX: index, CONFIRM: 1 });
         },
 
+        async calibrate(index) {
+            if (!window.confirm('确认使用 T' + index + ' 自动探测料管长度并完成回料定位？开始前上下方及五通传感器必须均无料。')) return;
+            await this.executeCommand('ACE_CALIBRATE', { INDEX: index, CONFIRM: 1 });
+        },
+
         async calibrateRetract() {
-            if (!window.confirm('确认继续回料距离标定，并将耗材回收到估算的五通预停放位置？')) return;
+            if (!window.confirm('确认继续探测回料路径，并将耗材回收到五通预停放位置？')) return;
             await this.executeCommand('ACE_CALIBRATE_RETRACT', { CONFIRM: 1 });
         },
 
         async saveCalibration() {
-            if (!window.confirm('确认保存当前送料和回料标定结果？配置中的料管长度或停车余量变化后需要重新标定。')) return;
+            if (!window.confirm('确认保存自动探测的料管长度和停放距离？配置中的管长或停车余量变化后需要重新探测。')) return;
             await this.executeCommand('ACE_CALIBRATION_SAVE', { CONFIRM: 1 });
         },
 
@@ -1146,19 +1191,26 @@ createApp({
             return labels[this.calibration.phase] || '未标定';
         },
 
-        calibrationFeedResult() {
-            if (Number(this.calibration.feed_upper_bound) <= 0) return '--';
-            return `${Number(this.calibration.feed_completed).toFixed(1)} / ${Number(this.calibration.feed_upper_bound).toFixed(1)} mm`;
+        calibrationParkingDistanceLabel() {
+            return this.calibration.mode === 'parking_sensor'
+                ? '上方传感器 → 五通停放点'
+                : '上方传感器 → 内部停放点';
         },
 
-        calibrationRetractResult() {
-            if (Number(this.calibration.retract_distance) <= 0) return '--';
-            return `${Number(this.calibration.retract_distance).toFixed(1)} mm · 停放 ${Number(this.calibration.parking_distance).toFixed(1)} mm`;
+        calibrationUpperToParkingSensorResult() {
+            const distance = Number(this.calibration.upper_to_parking_sensor_distance || 0);
+            return distance > 0 ? `${distance.toFixed(1)} mm` : '--';
+        },
+
+        calibrationUpperToParkingResult() {
+            const distance = Number(this.calibration.upper_to_parking_distance || 0);
+            return distance > 0 ? `${distance.toFixed(1)} mm` : '--';
         },
 
         calibrationSensorsClear() {
             return this.sensors.upper.available && this.sensors.lower.available &&
-                !this.sensors.upper.detected && !this.sensors.lower.detected;
+                !this.sensors.upper.detected && !this.sensors.lower.detected &&
+                (!this.sensors.parking.available || !this.sensors.parking.detected);
         },
 
         motionControlsDisabled() {
@@ -1267,7 +1319,7 @@ createApp({
             payload.COLOR = `${rgb[0]},${rgb[1]},${rgb[2]}`; // ACE driver expects R,G,B or named color
             const safeMaterial = (typeof material === 'string' && material.trim()) ? material.trim() : 'PLA';
             let safeTemp = Number(temp);
-            if (!Number.isFinite(safeTemp) || safeTemp <= 0 || safeTemp > 300) {
+            if (!Number.isFinite(safeTemp) || safeTemp <= 0 || safeTemp > 500) {
                 safeTemp = 200;
             }
             payload.MATERIAL = safeMaterial;
@@ -1293,7 +1345,7 @@ createApp({
             payload.INDEX = slotIndex;
             payload.COLOR = Array.isArray(rgb) ? `${rgb[0]},${rgb[1]},${rgb[2]}` : hex || '255,255,255';
             payload.MATERIAL = material && material.trim() ? material.trim() : 'PLA';
-            payload.TEMP = Math.max(1, Math.min(300, tempDefault));
+            payload.TEMP = Math.max(1, Math.min(500, tempDefault));
             const success = await this.executeCommand('ACE_SET_SLOT', payload);
             if (success) {
                 setTimeout(() => this.loadStatus(), 500);

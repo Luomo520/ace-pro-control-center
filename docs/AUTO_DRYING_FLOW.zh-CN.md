@@ -1,6 +1,6 @@
 # 自动跟随打印烘干流程
 
-本流程由 ACEPROSV08 Klipper 驱动每秒读取 `print_stats` 执行，不依赖 Fluidd 页面保持打开，也不依赖切片器开始或结束宏。
+本流程由 Ace Pro Control Center Klipper 驱动每秒读取 `print_stats` 执行，不依赖 Fluidd 页面保持打开，也不依赖切片器开始或结束宏。
 
 ```mermaid
 flowchart TD

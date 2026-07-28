@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ACE Pro 控制面板</title>
+    <title>ACE Pro 管理中心</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="ace-dashboard.css?v=20260727a">
     <script src="vue.global.prod.js?v=3.5.13"></script>
@@ -71,8 +71,8 @@
                             <span class="value">{{ autoDryingStatusText() }}</span>
                         </div>
                         <div class="info-row">
-                            <span class="label">{{ t('deviceInfo.rfid') }}:</span>
-                            <span class="value">{{ deviceStatus.enable_rfid ? t('deviceInfo.rfidOn') : t('deviceInfo.rfidOff') }}</span>
+                            <span class="label">五通后传感器：</span>
+                            <span class="sensor-switch" :class="sensorClass(sensors.parking)">{{ sensorText(sensors.parking) }}</span>
                         </div>
                     </div>
                 </div>
@@ -201,17 +201,21 @@
                                         </select>
                                     </div>
                                     <div class="info-item">
-                                        <span class="label">{{ t('slots.temp') }}:</span>
+                                        <span class="label">耗材温度：</span>
                                         <input
                                             class="temp-input"
                                             type="number"
                                             min="1"
-                                            max="300"
+                                            max="500"
                                             :value="slot.temp || 0"
                                             @blur="commitSlotTemp(slot.index, inst.index, slot.tool, $event, slot.color, slot.material || slot.type || '')"
                                             @keydown.enter.prevent="commitSlotTemp(slot.index, inst.index, slot.tool, $event, slot.color, slot.material || slot.type || '')"
                                             :disabled="isSlotLocked(inst, slot)"
                                         >
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="label">烘干温度：</span>
+                                        <span class="value">{{ slot.drying_temperature > 0 ? `${slot.drying_temperature}°C` : '--' }}</span>
                                     </div>
                                     <div class="info-item">
                                         <span class="label">{{ t('slots.sku') }}:</span>
@@ -267,7 +271,7 @@
 
             <div class="card calibration-card">
                 <div class="calibration-header">
-                    <h2>距离标定与预装载</h2>
+                    <h2>自动探测料管长度与预装载</h2>
                     <span class="status-badge">{{ calibrationStatusText() }}</span>
                 </div>
                 <div class="calibration-status-grid">
@@ -280,12 +284,20 @@
                         <span class="sensor-switch" :class="sensorClass(sensors.lower)">{{ sensorText(sensors.lower) }}</span>
                     </div>
                     <div class="calibration-status-item">
-                        <span>送料结果</span>
-                        <strong>{{ calibrationFeedResult() }}</strong>
+                        <span>五通传感器</span>
+                        <span class="sensor-switch" :class="sensorClass(sensors.parking)">{{ sensorText(sensors.parking) }}</span>
+                    </div>
+                    <div v-if="calibration.mode === 'parking_sensor'" class="calibration-status-item">
+                        <span>上方传感器 → 五通传感器</span>
+                        <strong>{{ calibrationUpperToParkingSensorResult() }}</strong>
                     </div>
                     <div class="calibration-status-item">
-                        <span>回料结果</span>
-                        <strong>{{ calibrationRetractResult() }}</strong>
+                        <span>{{ calibrationParkingDistanceLabel() }}</span>
+                        <strong>{{ calibrationUpperToParkingResult() }}</strong>
+                    </div>
+                    <div class="calibration-status-item">
+                        <span>ACE 出料口 → 五通进料口</span>
+                        <strong>{{ Number(calibration.bowden_tube_length || 0).toFixed(1) }} mm</strong>
                     </div>
                 </div>
                 <div class="calibration-controls">
@@ -296,10 +308,9 @@
                         </select>
                     </label>
                     <button class="btn btn-primary" :disabled="motionControlsDisabled()" @click="preloadSlot(calibrationSlot)">冷态预装载</button>
-                    <button class="btn btn-secondary" :disabled="motionControlsDisabled() || !calibrationSensorsClear()" @click="calibrateFeed(calibrationSlot)">标定送料</button>
-                    <button class="btn btn-secondary" :disabled="motionControlsDisabled() || calibration.phase !== 'feed_complete'" @click="calibrateRetract">标定回料</button>
-                    <button class="btn btn-success" :disabled="motionControlsDisabled() || calibration.phase !== 'retract_complete'" @click="saveCalibration">保存标定</button>
-                    <button class="btn btn-secondary" @click="cancelCalibration">取消标定</button>
+                    <button class="btn btn-secondary" :disabled="motionControlsDisabled() || !calibrationSensorsClear()" @click="calibrate(calibrationSlot)">自动探测料管长度</button>
+                    <button class="btn btn-success" :disabled="motionControlsDisabled() || calibration.phase !== 'retract_complete'" @click="saveCalibration">保存探测结果</button>
+                    <button class="btn btn-secondary" @click="cancelCalibration">取消探测</button>
                     <button class="btn btn-warning" :disabled="motionControlsDisabled()" @click="fullUnload(calibrationSlot)">完全卸载</button>
                     <button class="btn btn-danger" @click="abortToolchange">紧急停止</button>
                 </div>
@@ -373,6 +384,6 @@
         </div>
     </div>
 
-    <script src="ace-dashboard.js?v=20260727a"></script>
+    <script src="ace-dashboard.js?v=20260728a"></script>
 </body>
 </html>

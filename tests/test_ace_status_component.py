@@ -49,6 +49,11 @@ class AceStatusContractTests(unittest.TestCase):
                 "ACE_CALIBRATE_FEED INDEX=1 CONFIRM=1",
             ),
             (
+                "ACE_CALIBRATE",
+                {"INDEX": 1, "CONFIRM": True},
+                "ACE_CALIBRATE INDEX=1 CONFIRM=1",
+            ),
+            (
                 "ACE_CALIBRATE_RETRACT",
                 {"CONFIRM": 1},
                 "ACE_CALIBRATE_RETRACT CONFIRM=1",
@@ -76,6 +81,7 @@ class AceStatusContractTests(unittest.TestCase):
         for command, params in (
             ("ACE_PRELOAD", {"INDEX": 0}),
             ("ACE_CALIBRATE_FEED", {"INDEX": 0}),
+            ("ACE_CALIBRATE", {"INDEX": 0}),
             ("ACE_CALIBRATE_RETRACT", {}),
             ("ACE_CALIBRATION_SAVE", {}),
             ("ACE_FULL_UNLOAD", {"INDEX": 0}),
@@ -101,6 +107,32 @@ class AceStatusContractTests(unittest.TestCase):
             "ACE_FEED INDEX=0 LENGTH=20 SPEED=10 CONFIRM=1",
         )
 
+    def test_change_spool_requires_strict_confirmation(self):
+        self.assertEqual(
+            ace_status.build_gcode({
+                "command": "ACE_CHANGE_SPOOL",
+                "params": {"INDEX": 2, "CONFIRM": 1},
+            }),
+            "ACE_CHANGE_SPOOL INDEX=2 CONFIRM=1",
+        )
+
+        for params in (
+            {"INDEX": 2},
+            {"INDEX": 2, "CONFIRM": 0},
+            {"INDEX": 2, "CONFIRM": 2},
+            {"INDEX": 2, "CONFIRM": True},
+            {"INDEX": 2, "CONFIRM": 1.0},
+            {"INDEX": 2, "CONFIRM": " 1 "},
+            {"INDEX": 2, "CONFIRM": "yes"},
+            {"INDEX": 2, "CONFIRM": 1, "TOOL": 2},
+        ):
+            with self.subTest(params=params):
+                with self.assertRaises(ace_status.AceRequestError):
+                    ace_status.build_gcode({
+                        "command": "ACE_CHANGE_SPOOL",
+                        "params": params,
+                    })
+
     def test_normalizes_sv08_inventory_and_sensor_state(self):
         status = ace_status.normalize_status(
             {
@@ -111,6 +143,10 @@ class AceStatusContractTests(unittest.TestCase):
                 "max_dryer_temperature": 65,
                 "dryer": {"status": "drying", "target_temp": 50},
                 "slots": [{"status": "ready", "type": "PLA"}],
+                "parking_sensor": {
+                    "available": True,
+                    "detected": True,
+                },
             },
             {
                 "ace_current_index": 0,
@@ -127,13 +163,53 @@ class AceStatusContractTests(unittest.TestCase):
             {"filament_detected": False},
         )
 
-        self.assertEqual(status["driver"], "ACEPROSV08")
+        self.assertEqual(status["driver"], "ACE_PRO_CONTROL_CENTER")
         self.assertTrue(status["connected"])
         self.assertEqual(status["current_tool"], 0)
         self.assertEqual(status["feed_assist_index"], 1)
         self.assertEqual(status["slots"][0]["color"]["hex"], "#0C2238")
         self.assertTrue(status["sensors"]["upper"]["detected"])
         self.assertFalse(status["sensors"]["lower"]["detected"])
+        self.assertTrue(status["sensors"]["parking"]["available"])
+        self.assertTrue(status["sensors"]["parking"]["detected"])
+
+    def test_exposes_material_profiles_and_resolves_slot_profile(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "material_profiles": {
+                    "NYLON CUSTOM": {
+                        "name": "Nylon Custom",
+                        "drying_temperature": 55,
+                        "material_temperature": 275,
+                    },
+                    "__unknown__": {
+                        "name": "UNKNOWN",
+                        "drying_temperature": 45,
+                        "material_temperature": 0,
+                    },
+                },
+            },
+            {
+                "ace_inventory": [{
+                    "status": "ready",
+                    "material": "Nylon Custom",
+                    "color": [1, 2, 3],
+                    "temp": 275,
+                }],
+            },
+            {},
+            {},
+        )
+
+        self.assertEqual(
+            status["material_profiles"]["NYLON CUSTOM"]["drying_temperature"],
+            55,
+        )
+        self.assertEqual(status["slots"][0]["profile"]["name"], "Nylon Custom")
+        self.assertEqual(status["slots"][0]["drying_temperature"], 55)
+        self.assertEqual(status["slots"][0]["material_temperature"], 275)
+        self.assertTrue(status["slots"][0]["profile_known"])
 
     def test_normalizes_slot_positions_and_calibration_state(self):
         status = ace_status.normalize_status(
@@ -152,11 +228,17 @@ class AceStatusContractTests(unittest.TestCase):
                     "valid": True,
                     "stale": False,
                     "phase": "feed_complete",
+                    "mode": "parking_sensor",
                     "selected_slot": 2,
                     "feed_completed": 1200,
                     "feed_upper_bound": 1205,
                     "retract_distance": 1035,
                     "parking_distance": 1035,
+                    "upper_to_parking_sensor_distance": 960,
+                    "upper_to_parking_distance": 1035,
+                    "parking_sensor_cleared": True,
+                    "parking_direction": "retract",
+                    "parking_offset": 75,
                     "last_error": "",
                 },
             },
@@ -176,6 +258,14 @@ class AceStatusContractTests(unittest.TestCase):
             status["calibration"]["feed_upper_bound"], 1205)
         self.assertEqual(
             status["calibration"]["parking_distance"], 1035)
+        self.assertEqual(
+            status["calibration"]["upper_to_parking_sensor_distance"], 960)
+        self.assertEqual(
+            status["calibration"]["upper_to_parking_distance"], 1035)
+        self.assertEqual(status["calibration"]["mode"], "parking_sensor")
+        self.assertTrue(
+            status["calibration"]["parking_sensor_cleared"])
+        self.assertEqual(status["calibration"]["parking_offset"], 75)
 
     def test_missing_calibration_is_unavailable_not_valid_zero(self):
         status = ace_status.normalize_status({}, {}, {}, {})
@@ -251,6 +341,34 @@ class AceStatusContractTests(unittest.TestCase):
         self.assertEqual(status["auto_drying"]["temperature"], 50)
         self.assertEqual(status["auto_drying"]["reason"], "PLA_MIXED")
         self.assertEqual(status["auto_drying"]["notice_id"], 7)
+
+    def test_exposes_driver_recovery_state_and_new_identity(self):
+        status = ace_status.normalize_status(
+            {
+                "connected": True,
+                "connection": {
+                    "connected": True,
+                    "state": "connected",
+                    "toolchange_recovery_required": True,
+                },
+                "toolchange": {
+                    "active": True,
+                    "recovery_required": True,
+                    "recovery": {
+                        "tool": 1,
+                        "phase": "OLD_BOWDEN_RETRACT",
+                        "attempts": 1,
+                    },
+                },
+            },
+            {},
+            {},
+            {},
+        )
+
+        self.assertEqual(status["driver"], "ACE_PRO_CONTROL_CENTER")
+        self.assertTrue(status["toolchange"]["recovery_required"])
+        self.assertEqual(status["toolchange"]["recovery"]["tool"], 1)
 
     def test_auto_drying_switches_are_strict_and_available_while_printing(self):
         for command in (

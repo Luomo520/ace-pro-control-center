@@ -6,6 +6,8 @@ import re
 import time
 from typing import Any, Callable, Dict, Mapping, Optional
 
+DRIVER_ID = "ACE_PRO_CONTROL_CENTER"
+LEGACY_DRIVER_IDS = ["ACEPROSV08"]
 MATERIAL_RE = re.compile(r"^[A-Za-z0-9._+-]{1,24}$")
 DEFAULT_UPPER_SENSOR = "extruder_sensor"
 DEFAULT_LOWER_SENSOR = "toolhead_sensor"
@@ -137,10 +139,45 @@ def _parse_inventory(value: Any) -> list[Dict[str, Any]]:
     return slots
 
 
+def _normalize_material_profiles(value: Any) -> Dict[str, Dict[str, Any]]:
+    raw_profiles = _as_dict(value)
+    profiles: Dict[str, Dict[str, Any]] = {}
+    for raw_key, raw_value in raw_profiles.items():
+        profile = _as_dict(raw_value)
+        key = str(raw_key or "").strip().upper()
+        if not key or not profile:
+            continue
+        if key == "__META__":
+            profiles["__meta__"] = {
+                "show_material_warning": _safe_bool(
+                    profile.get("show_material_warning"), True),
+            }
+            continue
+        normalized_key = key.lower() if key.startswith("__") else key
+        profiles[normalized_key] = {
+            "name": str(profile.get("name") or raw_key),
+            "drying_temperature": _safe_int(
+                profile.get("drying_temperature")),
+            "material_temperature": _safe_int(
+                profile.get("material_temperature")),
+        }
+    return profiles
+
+
 def _sensor_state(sensor: Mapping[str, Any], name: str) -> Dict[str, Any]:
     available = bool(sensor)
     detected = _safe_bool(sensor.get("filament_detected"), False) if available else False
     return {"name": name, "available": available, "detected": detected}
+
+
+def _driver_sensor_state(sensor: Any, name: str) -> Dict[str, Any]:
+    raw = _as_dict(sensor)
+    available = _safe_bool(raw.get("available"), bool(raw))
+    return {
+        "name": name,
+        "available": available,
+        "detected": _safe_bool(raw.get("detected"), False) if available else False,
+    }
 
 
 def _normalize_auto_drying(value: Any) -> Dict[str, Any]:
@@ -184,6 +221,7 @@ def _normalize_calibration(value: Any, available: bool = False) -> Dict[str, Any
         "valid": _safe_bool(raw.get("valid"), False) if is_available else False,
         "stale": _safe_bool(raw.get("stale"), False) if is_available else False,
         "phase": str(raw.get("phase") or ("idle" if is_available else "unavailable")),
+        "mode": str(raw.get("mode") or "legacy_feed"),
         "selected_slot": _safe_int(raw.get("selected_slot"), -1),
         "feed_completed": _safe_float(raw.get("feed_completed")),
         "feed_upper_bound": _safe_float(raw.get("feed_upper_bound")),
@@ -191,6 +229,14 @@ def _normalize_calibration(value: Any, available: bool = False) -> Dict[str, Any
         "sensor_clear_upper_bound": _safe_float(raw.get("sensor_clear_upper_bound")),
         "retract_distance": _safe_float(raw.get("retract_distance")),
         "parking_distance": _safe_float(raw.get("parking_distance")),
+        "parking_sensor_cleared": _safe_bool(raw.get("parking_sensor_cleared")),
+        "parking_direction": str(raw.get("parking_direction") or ""),
+        "parking_offset": _safe_float(raw.get("parking_offset")),
+        "upper_to_parking_sensor_distance": _safe_float(
+            raw.get("upper_to_parking_sensor_distance")),
+        "upper_to_parking_distance": _safe_float(
+            raw.get("upper_to_parking_distance")),
+        "bowden_tube_length": _safe_float(raw.get("bowden_tube_length")),
         "last_error": str(raw.get("last_error") or ""),
     }
 
@@ -219,6 +265,8 @@ def normalize_status(
         available=isinstance(calibration_raw, Mapping),
     )
     slots = _parse_inventory(variables.get("ace_inventory"))
+    material_profiles = _normalize_material_profiles(
+        ace.get("material_profiles"))
 
     hardware_slots = ace.get("slots")
     if isinstance(hardware_slots, list):
@@ -231,6 +279,13 @@ def normalize_status(
     for slot in slots:
         slot["loaded"] = current_tool == slot["index"]
         slot["active"] = slot["loaded"]
+        profile = material_profiles.get(slot["material"].strip().upper())
+        slot["profile"] = profile or {}
+        slot["profile_known"] = profile is not None
+        slot["drying_temperature"] = _safe_int(
+            profile.get("drying_temperature") if profile else 0)
+        slot["material_temperature"] = _safe_int(
+            profile.get("material_temperature") if profile else slot["temperature"])
 
     connected = _safe_bool(
         connection.get("connected"),
@@ -245,7 +300,7 @@ def normalize_status(
     )
     warnings = []
     if recovery_required:
-        warnings.append("换料状态不确定，请检查上下传感器后确认恢复")
+        warnings.append("换料状态不确定，正在根据实时传感器状态自动协调恢复")
     elif connection_state != "connected":
         warnings.append("ACE 连接中断，未自动重放物理动作")
     last_error = str(toolchange.get("last_error") or "").strip()
@@ -253,7 +308,8 @@ def normalize_status(
         warnings.append(last_error)
     return {
         "api_version": 1,
-        "driver": "ACEPROSV08",
+        "driver": DRIVER_ID,
+        "compatible_driver_ids": [DRIVER_ID] + LEGACY_DRIVER_IDS,
         "driver_version": str(ace.get("driver_version") or "unknown"),
         "connected": connected,
         "connection_state": connection_state,
@@ -278,6 +334,8 @@ def normalize_status(
         "sensors": {
             "upper": _sensor_state(upper, upper_name),
             "lower": _sensor_state(lower, lower_name),
+            "parking": _driver_sensor_state(
+                ace.get("parking_sensor"), "parking_sensor"),
         },
         "endless_spool": {
             "enabled": _safe_bool(endless.get("enabled"), _safe_bool(variables.get("ace_endless_spool_enabled"))),
@@ -290,9 +348,13 @@ def normalize_status(
             "context": _as_dict(toolchange.get("context")),
             "last_error": last_error,
             "recovery_required": recovery_required,
+            "recovery": _as_dict(toolchange.get("recovery")),
             "cancel_requested": _safe_bool(toolchange.get("cancel_requested")),
         },
         "slots": slots,
+        "material_profiles": material_profiles,
+        "material_warning_enabled": _safe_bool(
+            ace.get("material_warning_enabled"), True),
         "max_dryer_temperature": _safe_int(ace.get("max_dryer_temperature"), 65),
         "warnings": warnings,
     }
@@ -348,6 +410,23 @@ def _build_index_command(command: str) -> Callable[[Mapping[str, Any], int], str
         _reject_unknown(params, {"INDEX"})
         return f"{command} INDEX={_require_int(params, 'INDEX', 0, 3)}"
     return builder
+
+
+def _build_change_spool(params: Mapping[str, Any], max_dryer_temperature: int = 65) -> str:
+    _reject_unknown(params, {"INDEX", "CONFIRM"})
+    confirm = params.get("CONFIRM")
+    confirmed = (
+        (isinstance(confirm, int) and not isinstance(confirm, bool) and confirm == 1)
+        or (isinstance(confirm, str) and confirm == "1")
+    )
+    if not confirmed:
+        raise AceRequestError(
+            "confirmation_required",
+            "更换料卷必须设置 CONFIRM=1",
+            "params.CONFIRM",
+        )
+    index = _require_int(params, "INDEX", 0, 3)
+    return f"ACE_CHANGE_SPOOL INDEX={index} CONFIRM=1"
 
 
 def _build_move(command: str) -> Callable[[Mapping[str, Any], int], str]:
@@ -418,7 +497,7 @@ def _build_calibration_cancel(params: Mapping[str, Any], max_dryer_temperature: 
 COMMAND_BUILDERS: Dict[str, Callable[[Mapping[str, Any], int], str]] = {
     "ACE_SET_SLOT": _build_set_slot,
     "ACE_CHANGE_TOOL": _build_change_tool,
-    "ACE_CHANGE_SPOOL": _build_index_command("ACE_CHANGE_SPOOL"),
+    "ACE_CHANGE_SPOOL": _build_change_spool,
     "ACE_FEED": _build_move("ACE_FEED"),
     "ACE_RETRACT": _build_move("ACE_RETRACT"),
     "ACE_ENABLE_FEED_ASSIST": _build_index_command("ACE_ENABLE_FEED_ASSIST"),
@@ -436,6 +515,7 @@ COMMAND_BUILDERS: Dict[str, Callable[[Mapping[str, Any], int], str]] = {
     "ACE_ABORT_TOOLCHANGE": _build_no_params("ACE_ABORT_TOOLCHANGE"),
     "ACE_PRELOAD": _build_confirmed_index("ACE_PRELOAD"),
     "ACE_CALIBRATE_FEED": _build_confirmed_index("ACE_CALIBRATE_FEED"),
+    "ACE_CALIBRATE": _build_confirmed_index("ACE_CALIBRATE"),
     "ACE_CALIBRATE_RETRACT": _build_confirmed_no_params(
         "ACE_CALIBRATE_RETRACT"),
     "ACE_CALIBRATION_SAVE": _build_confirmed_no_params(
@@ -457,11 +537,12 @@ def build_gcode(payload: Mapping[str, Any], printing: bool = False, connected: b
         "ACE_ABORT_TOOLCHANGE",
         "ACE_ENABLE_AUTO_DRYING", "ACE_DISABLE_AUTO_DRYING",
     }:
-        raise AceRequestError("driver_offline", "ACEPROSV08 未连接", status_code=503)
+        raise AceRequestError(
+            "driver_offline", "ACE Pro 管理中心未连接", status_code=503)
     write_commands = {
         "ACE_SET_SLOT", "ACE_CHANGE_TOOL", "ACE_CHANGE_SPOOL", "ACE_FEED", "ACE_RETRACT",
         "ACE_ENABLE_FEED_ASSIST", "ACE_START_DRYING", "ACE_ENABLE_ENDLESS_SPOOL",
-        "ACE_PRELOAD", "ACE_CALIBRATE_FEED", "ACE_CALIBRATE_RETRACT",
+        "ACE_PRELOAD", "ACE_CALIBRATE", "ACE_CALIBRATE_FEED", "ACE_CALIBRATE_RETRACT",
         "ACE_CALIBRATION_SAVE", "ACE_FULL_UNLOAD",
     }
     if printing and command in write_commands:
@@ -481,7 +562,7 @@ class AceStatus:
         self.server.register_endpoint("/server/ace/slots", ["GET"], self.handle_slots_request)
         self.server.register_endpoint("/server/ace/capabilities", ["GET"], self.handle_capabilities_request)
         self.server.register_endpoint("/server/ace/command", ["POST"], self.handle_command_request)
-        self.logger.info("ACEPROSV08 status API loaded")
+        self.logger.info("Ace Pro Control Center status API loaded")
 
     async def _query(self) -> Dict[str, Any]:
         objects = {
@@ -536,7 +617,8 @@ class AceStatus:
         status = await self.handle_status_request(webrequest)
         return {
             "api_version": 1,
-            "driver": "ACEPROSV08",
+            "driver": DRIVER_ID,
+            "compatible_driver_ids": [DRIVER_ID] + LEGACY_DRIVER_IDS,
             "single_device": True,
             "slots": 4,
             "max_dryer_temperature": status.get("max_dryer_temperature", 65),

@@ -2,22 +2,60 @@ import serial, threading, time, logging, json, struct, queue, traceback, re, cop
 from serial import SerialException
 import serial.tools.list_ports
 
-ACEPROSV08_DRIVER_VERSION = "1.1.0-luomo"
+ACE_PRO_CONTROL_CENTER_DRIVER_VERSION = "1.2.0"
+# Compatibility alias for existing installers and third-party status readers.
+ACEPROSV08_DRIVER_VERSION = ACE_PRO_CONTROL_CENTER_DRIVER_VERSION
 CALIBRATION_FORMAT_VERSION = 1
 
 AUTO_DRYING_DURATION_MINUTES = 1440
-AUTO_DRYING_KNOWN_MATERIALS = {
-    'PLA', 'ABS', 'ABSCF', 'PETG', 'PAHTCF', 'PETCF', 'PEEK'
+AUTO_DRYING_RETRY_CYCLE_DELAY = 300.0
+DEFAULT_MATERIAL_PROFILES = {
+    'PLA': {
+        'name': 'PLA', 'drying_temperature': 45, 'material_temperature': 210,
+    },
+    'ABS': {
+        'name': 'ABS', 'drying_temperature': 60, 'material_temperature': 260,
+    },
+    'PETG': {
+        'name': 'PETG', 'drying_temperature': 60, 'material_temperature': 250,
+    },
+    'ABSCF': {
+        'name': 'ABSCF', 'drying_temperature': 60, 'material_temperature': 260,
+    },
+    'PAHTCF': {
+        'name': 'PAHTCF', 'drying_temperature': 60, 'material_temperature': 270,
+    },
+    'PETCF': {
+        'name': 'PETCF', 'drying_temperature': 60, 'material_temperature': 270,
+    },
+    'PEEK': {
+        'name': 'PEEK', 'drying_temperature': 60, 'material_temperature': 360,
+    },
 }
-AUTO_DRYING_MESSAGES = {
-    'EMPTY': '未检测到可烘干耗材，本次打印不会自动启动烘干。',
-    'UNKNOWN': '检测到未知材料，将以 45°C 进行自动烘干，部分材料的烘干效果可能受限。',
-    'PLA_MIXED': (
-        '检测到 PLA 与其他材料混装，自动烘干使用 50°C 以保护 PLA；'
-        '其他高温材料的烘干效果可能受限。'),
-    'PLA_ONLY': '自动烘干使用 45°C：全部已装载耗材均为 PLA。',
-    'HIGH_TEMP': '自动烘干使用 60°C：已装载耗材均为高温材料。',
-}
+AUTO_DRYING_KNOWN_MATERIALS = set(DEFAULT_MATERIAL_PROFILES)
+def build_auto_drying_message(reason, temperature):
+    """Build a notice from the selected profile temperature, not a preset."""
+    try:
+        temperature = int(temperature)
+    except (TypeError, ValueError):
+        temperature = 0
+    temperature_text = (
+        '%d°C' % temperature if temperature > 0 else '配置温度')
+    if reason == 'EMPTY':
+        return '未检测到可烘干耗材，本次打印不会自动启动烘干。'
+    if reason == 'UNKNOWN':
+        return (
+            '检测到未知材料，将以 %s 进行自动烘干，烘干效果可能受限。'
+            % temperature_text)
+    if reason == 'PLA_MIXED':
+        return (
+            '检测到 PLA 与其他材料混装，自动烘干使用 %s 以保护 PLA；'
+            '其他材料的烘干效果可能受限。' % temperature_text)
+    if reason == 'PLA_ONLY':
+        return '自动烘干使用 %s：全部已装载耗材均为 PLA。' % temperature_text
+    if reason == 'HIGH_TEMP':
+        return '自动烘干使用 %s：已装载耗材均为已配置材料。' % temperature_text
+    return '自动烘干将使用 %s。' % temperature_text
 SLOT_POSITION_VALUES = {
     'internal_or_unknown',
     'preload_parked_estimated',
@@ -26,6 +64,96 @@ SLOT_POSITION_VALUES = {
     'nozzle',
     'unknown',
 }
+
+
+def _profile_config_value(config, name, default=None):
+    value = config.get(name, default)
+    if value is None:
+        return default
+    return value
+
+
+def _profile_config_int(config, name, default=None):
+    value = _profile_config_value(config, name, default)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError('%s must be an integer' % name)
+
+
+def parse_material_profiles(config, max_dryer_temperature=65):
+    """Parse material profiles stored in the main [ace] config section."""
+    profiles = {}
+    configured_entries = False
+    for index in range(1, 33):
+        fields = (
+            'material_%d_name' % index,
+            'material_%d_drying_temperature' % index,
+            'material_%d_temperature' % index,
+        )
+        values = [_profile_config_value(config, field) for field in fields]
+        if not any(value is not None and str(value).strip() for value in values):
+            continue
+        configured_entries = True
+        if any(value is None or not str(value).strip() for value in values):
+            raise ValueError(
+                'material_%d_name, material_%d_drying_temperature and '
+                'material_%d_temperature must be configured together' % (
+                    index, index, index))
+        name = str(values[0]).strip()
+        key = name.upper()
+        if key in profiles:
+            raise ValueError('duplicate material profile name: %s' % name)
+        drying_temperature = _profile_config_int(config, fields[1])
+        material_temperature = _profile_config_int(config, fields[2])
+        if drying_temperature <= 0 or drying_temperature > int(max_dryer_temperature):
+            raise ValueError(
+                '%s must be between 1 and %d' % (
+                    fields[1], int(max_dryer_temperature)))
+        if material_temperature <= 0 or material_temperature > 500:
+            raise ValueError('%s must be between 1 and 500' % fields[2])
+        profiles[key] = {
+            'name': name,
+            'drying_temperature': drying_temperature,
+            'material_temperature': material_temperature,
+        }
+
+    if not configured_entries:
+        profiles = copy.deepcopy(DEFAULT_MATERIAL_PROFILES)
+
+    unknown_drying_temperature = _profile_config_int(
+        config, 'unknown_material_drying_temperature', 45)
+    unknown_material_temperature = _profile_config_int(
+        config, 'unknown_material_temperature', 0)
+    mixed_drying_temperature = _profile_config_int(
+        config, 'mixed_material_drying_temperature', 50)
+    if unknown_drying_temperature <= 0 or unknown_drying_temperature > int(max_dryer_temperature):
+        raise ValueError(
+            'unknown_material_drying_temperature must be between 1 and %d' % (
+                int(max_dryer_temperature)))
+    if unknown_material_temperature < 0 or unknown_material_temperature > 500:
+        raise ValueError('unknown_material_temperature must be between 0 and 500')
+    if mixed_drying_temperature <= 0 or mixed_drying_temperature > int(max_dryer_temperature):
+        raise ValueError(
+            'mixed_material_drying_temperature must be between 1 and %d' % (
+                int(max_dryer_temperature)))
+    show_warning = str(
+        _profile_config_value(config, 'show_material_warning', True)
+    ).strip().lower() in ('1', 'true', 'yes', 'on')
+    profiles['__unknown__'] = {
+        'name': 'UNKNOWN',
+        'drying_temperature': unknown_drying_temperature,
+        'material_temperature': unknown_material_temperature,
+    }
+    profiles['__mixed__'] = {
+        'name': 'MIXED',
+        'drying_temperature': mixed_drying_temperature,
+        'material_temperature': 0,
+    }
+    profiles['__meta__'] = {'show_material_warning': show_warning}
+    return profiles
 
 
 def calculate_parking_distance(feed_upper_bound, bowden_tube_length,
@@ -39,13 +167,76 @@ def calculate_parking_distance(feed_upper_bound, bowden_tube_length,
     return parking_distance
 
 
+def normalize_parking_sensor_position(value):
+    position = str(value or 'after_five_way').strip().lower()
+    if position not in ('after_five_way', 'before_five_way'):
+        raise ValueError(
+            "parking_sensor_position must be 'after_five_way' or '"
+            "before_five_way'")
+    return position
+
+
+def _python_literal(value):
+    """Encode JSON-like state using literals accepted by Klipper."""
+    if isinstance(value, dict):
+        return '{' + ', '.join(
+            '%s: %s' % (json.dumps(str(key)), _python_literal(item))
+            for key, item in value.items()) + '}'
+    if isinstance(value, list):
+        return '[' + ', '.join(_python_literal(item) for item in value) + ']'
+    if isinstance(value, tuple):
+        return '(' + ', '.join(_python_literal(item) for item in value) + ')'
+    if value is True:
+        return 'True'
+    if value is False:
+        return 'False'
+    if value is None:
+        return 'None'
+    if isinstance(value, str):
+        return json.dumps(value)
+    return repr(value)
+
+
+def calculate_sensor_parking_correction(position, clear_move_length):
+    position = normalize_parking_sensor_position(position)
+    distance = float(clear_move_length)
+    if distance <= 0:
+        raise ValueError('parking sensor clear move length must be positive')
+    if position == 'after_five_way':
+        return 'retract', distance
+    return 'feed', distance
+
+
 def calibration_is_valid(record, bowden_tube_length, parking_margin,
-                         format_version=CALIBRATION_FORMAT_VERSION):
+                         format_version=CALIBRATION_FORMAT_VERSION,
+                         parking_sensor_enabled=False,
+                         parking_sensor_position='after_five_way',
+                         parking_sensor_clear_move_length=0.):
     if not isinstance(record, dict) or record.get('valid') is not True:
         return False
     try:
-        if int(record.get('format_version', -1)) != int(format_version):
+        record_version = int(record.get('format_version', -1))
+        if record_version != int(format_version):
             return False
+        mode = str(record.get('mode') or 'legacy_feed')
+        if mode == 'parking_sensor':
+            position = normalize_parking_sensor_position(
+                parking_sensor_position)
+            direction, correction = calculate_sensor_parking_correction(
+                position, parking_sensor_clear_move_length)
+            return (
+                bool(parking_sensor_enabled)
+                and str(record.get('parking_sensor_position')) == position
+                and abs(float(record.get('parking_sensor_clear_move_length'))
+                        - correction) <= 1e-6
+                and bool(record.get('parking_sensor_cleared'))
+                and str(record.get('parking_direction')) == direction
+                and abs(float(record.get('parking_offset'))
+                        - correction) <= 1e-6
+                and abs(float(record.get('parking_distance'))
+                        - correction) <= 1e-6)
+        if mode == 'manual_retract':
+            return float(record.get('parking_distance')) > 0
         if abs(float(record.get('bowden_tube_length'))
                - float(bowden_tube_length)) > 1e-6:
             return False
@@ -65,7 +256,8 @@ def calibration_is_valid(record, bowden_tube_length, parking_margin,
         return False
 
 
-def select_auto_drying_policy(slots):
+def select_auto_drying_policy(slots, profiles=None):
+    profiles = profiles or DEFAULT_MATERIAL_PROFILES
     loaded = []
     for slot_data in slots:
         status = str(slot_data.get('status') or 'empty').strip().lower()
@@ -74,19 +266,34 @@ def select_auto_drying_policy(slots):
         loaded.append(str(slot_data.get('material') or '').strip().upper())
     if not loaded:
         return 0, 'EMPTY'
-    if any(not material or material not in AUTO_DRYING_KNOWN_MATERIALS
-           for material in loaded):
-        return 45, 'UNKNOWN'
+    known_materials = set(profiles) - {'__unknown__', '__mixed__', '__meta__'}
+    unknown_profile = profiles.get(
+        '__unknown__',
+        {'drying_temperature': 45},
+    )
+    if any(not material or material not in known_materials for material in loaded):
+        return int(unknown_profile['drying_temperature']), 'UNKNOWN'
     has_pla = 'PLA' in loaded
     if has_pla and any(material != 'PLA' for material in loaded):
-        return 50, 'PLA_MIXED'
+        mixed_profile = profiles.get(
+            '__mixed__',
+            {'drying_temperature': 50},
+        )
+        return int(mixed_profile['drying_temperature']), 'PLA_MIXED'
     if has_pla:
-        return 45, 'PLA_ONLY'
-    return 60, 'HIGH_TEMP'
+        return int(profiles['PLA']['drying_temperature']), 'PLA_ONLY'
+    return min(
+        int(profiles[material]['drying_temperature'])
+        for material in loaded
+    ), 'HIGH_TEMP'
 
 
 class FilamentFeedError(Exception):
     """A bounded filament feed failed and the print must remain paused."""
+
+
+class AceMotionUncertainError(Exception):
+    """A sent physical request lost its response and must not be followed blindly."""
 
 
 class BunnyAce:
@@ -102,13 +309,25 @@ class BunnyAce:
         self.read_buffer = bytearray()
         if self._name.startswith('ace '):
             self._name = self._name[4:]
-        self.variables = self.printer.lookup_object('save_variables').allVariables
+        save_variables = self.printer.lookup_object('save_variables', None)
+        if save_variables is None:
+            raise config.error(
+                'Ace Pro Control Center requires one global [save_variables] '
+                'section. Add it to the main printer configuration; do not '
+                'duplicate it inside ace.cfg.')
+        self.variables = save_variables.allVariables
         self._load_slot_positions()
 
         self.serial_name = config.get('serial', '/dev/ttyACM0')
         self.baud = config.getint('baud', 115200)
         extruder_sensor_pin = config.get('extruder_sensor_pin', None)
         toolhead_sensor_pin = config.get('toolhead_sensor_pin', None)
+        if not extruder_sensor_pin or not toolhead_sensor_pin:
+            raise config.error(
+                'Ace Pro Control Center requires extruder_sensor_pin and '
+                'toolhead_sensor_pin in [ace]. Fill both pins before restarting '
+                'Klipper; the installer intentionally does not guess MCU pins.')
+        self.enable_debug_rpc = config.getboolean('enable_debug_rpc', False)
         self.feed_speed = config.getint('feed_speed', 50)
         self.retract_speed = config.getint('retract_speed', 50)
         self.feed_fast_speed = config.getfloat(
@@ -185,6 +404,21 @@ class BunnyAce:
         self.bowden_tube_length = config.getint('bowden_tube_length', 1000)
         self.five_way_parking_margin = config.getfloat(
             'five_way_parking_margin', 20., minval=0.)
+        # Optional five-way sensor.  When omitted, the legacy/manual
+        # calibration path remains available without claiming sensor closure.
+        parking_sensor_pin = config.get('parking_sensor_pin', None)
+        self.parking_sensor_position = normalize_parking_sensor_position(
+            config.get('parking_sensor_position', 'after_five_way'))
+        self.parking_sensor_clear_move_length = config.getfloat(
+            'parking_sensor_clear_move_length', 75., above=0.)
+        self.parking_sensor_debounce_count = config.getint(
+            'parking_sensor_debounce_count', 3, minval=1)
+        self.parking_sensor_enabled = bool(parking_sensor_pin)
+        self.calibration_max_retract_length = config.getfloat(
+            'calibration_max_retract_length',
+            float(self.toolchange_load_length)
+            + float(self.feed_slip_compensation_length),
+            above=0.)
         self.calibration_speed = config.getfloat(
             'calibration_speed', 25., above=0.)
         self.calibration_chunk_length = config.getfloat(
@@ -199,12 +433,20 @@ class BunnyAce:
         self._abort_requested = False
         self._load_calibration_record()
 
-        self.max_dryer_temperature = config.getint('max_dryer_temperature', 55)
+        self.max_dryer_temperature = config.getint(
+            'max_dryer_temperature', 65, minval=1)
+        self.material_profiles = parse_material_profiles(
+            config, self.max_dryer_temperature)
+        self.show_material_warning = bool(
+            self.material_profiles.get('__meta__', {}).get(
+                'show_material_warning', True))
 
         # Endless spool configuration - load from persistent variables if available
         saved_endless_spool_enabled = self.variables.get('ace_endless_spool_enabled', False)
         
         self.endless_spool_enabled = config.getboolean('endless_spool', saved_endless_spool_enabled)
+        self.endless_spool_require_same_material = config.getboolean(
+            'endless_spool_require_same_material', True)
         self.endless_spool_in_progress = False
         self.endless_spool_runout_detected = False
         self.endless_spool_runout_samples = 0
@@ -338,6 +580,9 @@ class BunnyAce:
 
         self._create_mmu_sensor(config, extruder_sensor_pin, "extruder_sensor")
         self._create_mmu_sensor(config, toolhead_sensor_pin, "toolhead_sensor")
+        if parking_sensor_pin:
+            self._create_mmu_sensor(config, parking_sensor_pin,
+                                    "parking_sensor")
         self.printer.register_event_handler('klippy:ready', self._handle_ready)
         self.printer.register_event_handler('klippy:disconnect', self._handle_disconnect)
         self.gcode.register_command(
@@ -404,6 +649,9 @@ class BunnyAce:
             'ACE_CALIBRATE_RETRACT', self.cmd_ACE_CALIBRATE_RETRACT,
             desc=self.cmd_ACE_CALIBRATE_RETRACT_help)
         self.gcode.register_command(
+            'ACE_CALIBRATE', self.cmd_ACE_CALIBRATE,
+            desc=self.cmd_ACE_CALIBRATE_help)
+        self.gcode.register_command(
             'ACE_CALIBRATION_SAVE', self.cmd_ACE_CALIBRATION_SAVE,
             desc=self.cmd_ACE_CALIBRATION_SAVE_help)
         self.gcode.register_command(
@@ -449,10 +697,13 @@ class BunnyAce:
 
     def _save_json_variable(self, name, value):
         stored = copy.deepcopy(value)
-        self.variables[name] = stored
-        encoded = json.dumps(stored, separators=(',', ':'))
+        encoded = _python_literal(stored)
         self.gcode.run_script_from_command(
             "SAVE_VARIABLE VARIABLE=%s VALUE='%s'" % (name, encoded))
+        # Only update the in-memory mirror after SAVE_VARIABLE accepted the
+        # value; a failed persistence call must not look successful until the
+        # next restart.
+        self.variables[name] = stored
 
     def _set_slot_position(self, index, position, persist=True):
         if index < 0 or index >= 4:
@@ -476,19 +727,28 @@ class BunnyAce:
         self.calibration_valid = calibration_is_valid(
             self.calibration_record,
             self.bowden_tube_length,
-            self.five_way_parking_margin)
+            self.five_way_parking_margin,
+            parking_sensor_enabled=self.parking_sensor_enabled,
+            parking_sensor_position=self.parking_sensor_position,
+            parking_sensor_clear_move_length=(
+                self.parking_sensor_clear_move_length))
 
     def _save_calibration_record(self, record):
         if not calibration_is_valid(
                 record,
                 self.bowden_tube_length,
-                self.five_way_parking_margin):
+                self.five_way_parking_margin,
+                parking_sensor_enabled=self.parking_sensor_enabled,
+                parking_sensor_position=self.parking_sensor_position,
+                parking_sensor_clear_move_length=(
+                    self.parking_sensor_clear_move_length)):
             raise ValueError(
                 'ACE calibration record does not match current config')
-        self.calibration_record = copy.deepcopy(record)
+        stored_record = copy.deepcopy(record)
+        self._save_json_variable('ace_calibration', stored_record)
+        # Publish the in-memory record only after saved_variables accepted it.
+        self.calibration_record = stored_record
         self.calibration_valid = True
-        self._save_json_variable(
-            'ace_calibration', self.calibration_record)
 
     def _print_state(self):
         print_stats = self.printer.lookup_object('print_stats', None)
@@ -514,68 +774,138 @@ class BunnyAce:
     def _require_calibration_preflight(self):
         state = self._print_state()
         if state in ('printing', 'paused'):
-            raise RuntimeError('ACE：打印或暂停期间禁止距离标定')
+            raise RuntimeError('ACE：打印或暂停期间禁止自动探测料管长度')
         if not self._connected or self._info.get('status') != 'ready':
             raise RuntimeError('ACE：设备未连接或尚未就绪')
         if (self._sensor_present('extruder_sensor')
                 or self._sensor_present('toolhead_sensor')):
             raise RuntimeError('ACE：标定前上下传感器必须均无料')
+        if (self.parking_sensor_enabled
+                and self._sensor_present('parking_sensor')):
+            raise RuntimeError('ACE：标定前五通传感器必须无料')
+
+    def _sensor_state_stable(self, name, expected, samples=None):
+        count = max(
+            1,
+            int(samples if samples is not None
+                else self.parking_sensor_debounce_count))
+        for sample in range(count):
+            if bool(self._sensor_present(name)) != bool(expected):
+                return False
+            if sample + 1 < count:
+                self.dwell(delay=0.01)
+        return True
+
+    def _require_calibration_save_preflight(self, preview):
+        state = self._print_state()
+        if state in ('printing', 'paused'):
+            raise RuntimeError('ACE：打印或暂停期间禁止保存料管长度探测结果')
+        if not self._connected or self._info.get('status') != 'ready':
+            raise RuntimeError('ACE：设备未连接或尚未就绪，不能保存料管长度探测结果')
+        if (self._sensor_present('extruder_sensor')
+                or self._sensor_present('toolhead_sensor')):
+            raise RuntimeError('ACE：保存前上下传感器必须均无料')
+        if (preview.get('mode') == 'parking_sensor'
+                and preview.get('parking_sensor_position') == 'after_five_way'
+                and not self._sensor_state_stable('parking_sensor', False)):
+            raise RuntimeError('ACE：保存前五通传感器必须保持无料')
 
     def _save_current_index(self, index):
         self.variables['ace_current_index'] = int(index)
         self.gcode.run_script_from_command(
             'SAVE_VARIABLE VARIABLE=ace_current_index VALUE=%d' % int(index))
 
+    def _calibrate_feed_without_parking_sensor(self, index, max_distance):
+        completed = 0.
+        while completed < max_distance:
+            if self._sensor_present('extruder_sensor'):
+                upper_bound = completed
+                break
+            step = min(
+                float(self.calibration_chunk_length),
+                max_distance - completed)
+            result = self._feed(
+                index, step, self.calibration_speed,
+                stop_sensor='extruder_sensor')
+            if result.get('uncertain'):
+                raise RuntimeError(
+                    'ACE：标定送料连接状态不确定，未重放该分段')
+            triggered = (
+                result.get('stopped_by_sensor')
+                or self._sensor_present('extruder_sensor'))
+            if triggered:
+                upper_bound = completed + step
+                break
+            completed += step
+            self.wait_ace_ready()
+        else:
+            raise FilamentFeedError(
+                'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发'
+                % max_distance)
+
+        if upper_bound <= 0:
+            raise RuntimeError('ACE：上方传感器在送料前已触发')
+        parking_distance = calculate_parking_distance(
+            upper_bound,
+            self.bowden_tube_length,
+            self.five_way_parking_margin,
+            max_distance)
+        return completed, upper_bound, parking_distance
+
     def _calibrate_feed(self, index):
         max_distance = (
             float(self.toolchange_load_length)
             + float(self.feed_slip_compensation_length))
-        completed = 0.
+        # Feed establishes only the physical starting point.  It is not a
+        # measurement: short feed requests can flex filament without turning
+        # the spool, so the retract phase is the sole distance reference.
         self._calibration_preview = None
         self._calibration_phase = 'feeding'
         self._calibration_last_error = ''
         try:
-            while completed < max_distance:
-                if self._sensor_present('extruder_sensor'):
-                    upper_bound = completed
-                    break
-                step = min(
-                    float(self.calibration_chunk_length),
-                    max_distance - completed)
+            if self._sensor_present('extruder_sensor'):
+                raise RuntimeError('ACE：上方传感器在送料标定前已触发')
+            if self.parking_sensor_enabled:
                 result = self._feed(
-                    index, step, self.calibration_speed,
+                    index, max_distance, self.calibration_speed,
                     stop_sensor='extruder_sensor')
                 if result.get('uncertain'):
                     raise RuntimeError(
-                        'ACE：标定送料连接状态不确定，未重放该分段')
-                triggered = (
-                    result.get('stopped_by_sensor')
-                    or self._sensor_present('extruder_sensor'))
-                if triggered:
-                    upper_bound = completed + step
-                    break
-                completed += step
-                self.wait_ace_ready()
+                        'ACE：标定送料连接状态不确定，未重放该动作')
+                if not (result.get('stopped_by_sensor')
+                        or self._sensor_present('extruder_sensor')):
+                    raise FilamentFeedError(
+                        'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发'
+                        % max_distance)
+                if not self._sensor_state_stable('parking_sensor', True):
+                    raise RuntimeError(
+                        'ACE：上方传感器已触发，但五通传感器未检测到耗材；'
+                        '请检查五通传感器接线、取反和耗材路径')
+                completed = 0.
+                upper_bound = 0.
+                parking_distance = 0.
+                mode = 'parking_sensor'
             else:
-                raise FilamentFeedError(
-                    'ACE：达到标定最大距离 %.1f mm 后上方传感器仍未触发'
-                    % max_distance)
-
-            if upper_bound <= 0:
-                raise RuntimeError('ACE：上方传感器在送料前已触发')
-            parking_distance = calculate_parking_distance(
-                upper_bound,
-                self.bowden_tube_length,
-                self.five_way_parking_margin,
-                max_distance)
+                completed, upper_bound, parking_distance = (
+                    self._calibrate_feed_without_parking_sensor(
+                        index, max_distance))
+                mode = 'legacy_feed'
             preview = {
                 'phase': 'feed_complete',
+                'mode': mode,
                 'source_slot': int(index),
                 'feed_completed': completed,
                 'feed_upper_bound': upper_bound,
                 'parking_distance': parking_distance,
+                'parking_sensor_enabled': self.parking_sensor_enabled,
+                'parking_sensor_position': self.parking_sensor_position,
+                'parking_sensor_clear_move_length': float(
+                    self.parking_sensor_clear_move_length),
                 'bowden_tube_length': float(self.bowden_tube_length),
                 'parking_margin': float(self.five_way_parking_margin),
+                'upper_to_parking_sensor_distance': 0.,
+                'upper_to_parking_distance': (
+                    parking_distance if mode == 'legacy_feed' else 0.),
             }
             self._calibration_preview = preview
             self._calibration_phase = 'feed_complete'
@@ -598,7 +928,8 @@ class BunnyAce:
             raise gcmd.error('ACE：槽位编号必须为 0-3')
         if gcmd.get_int('CONFIRM', 0) != 1:
             gcmd.respond_info(
-                'ACE：将使用 T%d 以 %.1f mm/s 分段送料；确认后请执行 '
+                'ACE：将使用 T%d 以 %.1f mm/s 连续送料到上方传感器；'
+                '该送料请求不作为距离测量。确认后请执行 '
                 'ACE_CALIBRATE_FEED INDEX=%d CONFIRM=1' % (
                     index, self.calibration_speed, index))
             return
@@ -606,18 +937,180 @@ class BunnyAce:
             self._require_calibration_preflight()
             self._acquire_motion('距离送料标定')
             preview = self._calibrate_feed(index)
-            gcmd.respond_info(
-                'ACE：送料标定完成，已确认 %.1f mm，上界 %.1f mm；'
-                '请确认后执行回料标定' % (
-                    preview['feed_completed'],
-                    preview['feed_upper_bound']))
+            if preview.get('mode') == 'parking_sensor':
+                gcmd.respond_info(
+                    'ACE：已连续送料到上方传感器，五通传感器同时检测到耗材；'
+                    '送料距离未计入标定，请确认后执行传感器回抽标定')
+            else:
+                gcmd.respond_info(
+                    'ACE：兼容送料标定完成，已确认 %.1f mm，上界 %.1f mm；'
+                    '请确认后执行回料标定' % (
+                        preview['feed_completed'],
+                        preview['feed_upper_bound']))
         except Exception as exc:
             raise gcmd.error(str(exc))
         finally:
             self._release_motion('距离送料标定')
 
+    cmd_ACE_CALIBRATE_help = (
+        'Run complete automatic ACE feed and retract calibration - INDEX= CONFIRM=1')
+
+    def _calibrate_combined(self, index):
+        self._calibration_phase = 'feeding'
+        self._calibration_last_error = ''
+        try:
+            self._calibrate_feed(index)
+            self._calibration_phase = 'feed_complete'
+            result = self._calibrate_retract()
+            if isinstance(result, dict) and result.get('phase') == 'retract_complete':
+                self._calibration_phase = 'retract_complete'
+            return result
+        except Exception as exc:
+            self._calibration_phase = 'failed'
+            self._calibration_last_error = str(exc)
+            raise
+
+    def cmd_ACE_CALIBRATE(self, gcmd):
+        index = gcmd.get_int('INDEX')
+        if index < 0 or index >= 4:
+            raise gcmd.error('ACE：槽位编号必须为 0-3')
+        if gcmd.get_int('CONFIRM', 0) != 1:
+            gcmd.respond_info(
+                'ACE：将自动执行送料到上方传感器，再自动回料到五通后传感器并完成清道；'
+                '确认后请执行 ACE_CALIBRATE INDEX=%d CONFIRM=1' % index)
+            return
+        try:
+            self._require_calibration_preflight()
+            self._acquire_motion('距离自动标定')
+            result = self._calibrate_combined(index)
+            if result.get('mode') == 'parking_sensor':
+                gcmd.respond_info(
+                    'ACE：自动探测料管长度完成，ACE 出料口到五通进料口 %.1f mm；'
+                    '上方传感器到五通传感器 %.1f mm，'
+                    '到五通停放点 %.1f mm；请保存探测结果' % (
+                        self.bowden_tube_length,
+                        result.get('upper_to_parking_sensor_distance', 0.),
+                        result.get('upper_to_parking_distance', 0.)))
+            else:
+                gcmd.respond_info(
+                    'ACE：自动探测料管长度完成，ACE 出料口到五通进料口 %.1f mm；'
+                    '上方传感器到内部停放点 %.1f mm；请保存探测结果' % (
+                        self.bowden_tube_length,
+                        result.get('upper_to_parking_distance', 0.)))
+        except Exception as exc:
+            raise gcmd.error(str(exc))
+        finally:
+            self._release_motion('距离自动标定')
+
     cmd_ACE_CALIBRATE_RETRACT_help = (
         'Calibrate shared ACE retract distance - CONFIRM=1')
+
+    def _sensor_guided_park(self, index, phase,
+                            sensor_already_cleared=False,
+                            measure_distance=False):
+        if not self.parking_sensor_enabled:
+            raise RuntimeError('ACE：未配置五通传感器')
+        if (not sensor_already_cleared
+                and not self._sensor_present('parking_sensor')):
+            raise RuntimeError(
+                'ACE：五通传感器开始回抽前必须检测到耗材；'
+                '请检查五通传感器状态和耗材路径')
+
+        sensor_clear_distance = None
+        if not sensor_already_cleared:
+            self._set_toolchange_phase(
+                phase + '_SEEK_SENSOR_CLEAR',
+                parking_sensor=True,
+                retract_remaining=float(self.calibration_max_retract_length))
+            if measure_distance:
+                sensor_clear_distance = (
+                    self._measure_parking_sensor_clear_distance(index, phase))
+            else:
+                result = self._retract(
+                    index,
+                    self.calibration_max_retract_length,
+                    self.retract_fast_speed,
+                    stop_sensor='parking_sensor',
+                    stop_when_present=False,
+                    stop_debounce_count=self.parking_sensor_debounce_count)
+                if result.get('uncertain'):
+                    raise RuntimeError(
+                        'ACE：五通传感器回抽期间连接状态不确定，未重放物理动作')
+                if not (result.get('stopped_by_sensor')
+                        or not self._sensor_present('parking_sensor')):
+                    raise RuntimeError(
+                        'ACE：达到最大回抽距离 %.1f mm 后五通传感器仍未解除' %
+                        self.calibration_max_retract_length)
+
+        direction, correction = calculate_sensor_parking_correction(
+            self.parking_sensor_position,
+            self.parking_sensor_clear_move_length)
+        self._set_toolchange_phase(
+            phase + '_FINAL_OFFSET',
+            parking_sensor=False,
+            parking_direction=direction,
+            parking_offset=correction)
+        if direction == 'retract':
+            result = self._retract(
+                index, correction, self.retract_parking_speed)
+        else:
+            result = self._feed(index, correction, self.feed_approach_speed)
+        if result.get('uncertain'):
+            raise RuntimeError(
+                'ACE：五通传感器解除后的 %.1f mm 偏移动作连接状态不确定，'
+                '未确认停放位置' % correction)
+        self.wait_ace_ready()
+
+        if (self.parking_sensor_position == 'after_five_way'
+                and not self._sensor_state_stable('parking_sensor', False)):
+            raise RuntimeError(
+                'ACE：完成 %.1f mm 停放回抽后五通传感器再次触发，'
+                '请检查传感器抖动或耗材回弹' % correction)
+        return {
+            'mode': 'parking_sensor',
+            'sensor_cleared': True,
+            'parking_direction': direction,
+            'parking_offset': correction,
+            'sensor_clear_distance': sensor_clear_distance,
+            'upper_to_parking_distance': (
+                sensor_clear_distance + correction
+                if sensor_clear_distance is not None else None),
+        }
+
+    def _measure_parking_sensor_clear_distance(self, index, phase):
+        """Measure the distance conservatively during calibration only."""
+        completed = 0.0
+        maximum = float(self.calibration_max_retract_length)
+        while self._sensor_present('parking_sensor'):
+            remaining = maximum - completed
+            if remaining <= 0:
+                raise RuntimeError(
+                    'ACE：达到最大回抽距离 %.1f mm 后五通传感器仍未解除' %
+                    maximum)
+            step = min(float(self.calibration_chunk_length), remaining)
+            self._set_toolchange_phase(
+                phase + '_MEASURE_SENSOR_DISTANCE',
+                parking_sensor=True,
+                retract_completed=completed,
+                retract_remaining=remaining,
+                retract_step=step)
+            result = self._retract(
+                index,
+                step,
+                self.calibration_speed,
+                stop_sensor='parking_sensor',
+                stop_when_present=False,
+                stop_debounce_count=self.parking_sensor_debounce_count)
+            if result.get('uncertain'):
+                raise RuntimeError(
+                    'ACE：测量上方传感器到五通传感器距离时连接状态不确定，'
+                    '未重放物理动作')
+            completed += step
+            if (result.get('stopped_by_sensor')
+                    or not self._sensor_present('parking_sensor')):
+                return completed
+            self.wait_ace_ready()
+        return completed
 
     def _calibrate_retract(self):
         preview = self._calibration_preview
@@ -625,7 +1118,7 @@ class BunnyAce:
                 or preview.get('phase') != 'feed_complete'):
             raise RuntimeError('ACE：请先完成送料标定')
         index = int(preview['source_slot'])
-        target = float(preview['parking_distance'])
+        target = float(preview.get('parking_distance') or 0.)
         retracted = 0.
         sensor_clear_completed = None
         sensor_clear_upper_bound = None
@@ -636,6 +1129,37 @@ class BunnyAce:
                 raise RuntimeError('ACE：回料标定开始前上方传感器必须有料')
             if self._sensor_present('toolhead_sensor'):
                 raise RuntimeError('ACE：回料标定前下方传感器必须无料')
+
+            if self.parking_sensor_enabled:
+                parked = self._sensor_guided_park(
+                    index, 'CALIBRATION_RETRACT', measure_distance=True)
+                if (self._sensor_present('extruder_sensor')
+                        or self._sensor_present('toolhead_sensor')):
+                    raise RuntimeError(
+                        'ACE：五通停放结束后上下传感器未全部清除')
+                preview.update({
+                    'phase': 'retract_complete',
+                    'mode': 'parking_sensor',
+                    'sensor_clear_completed': 0.,
+                    'sensor_clear_upper_bound': 0.,
+                    'sensor_clear_distance': parked.get(
+                        'sensor_clear_distance') or 0.,
+                    'retract_distance': parked['parking_offset'],
+                    'parking_distance': parked['parking_offset'],
+                    'parking_sensor_cleared': True,
+                    'parking_direction': parked['parking_direction'],
+                    'parking_offset': parked['parking_offset'],
+                    'upper_to_parking_sensor_distance': parked.get(
+                        'sensor_clear_distance') or 0.,
+                    'upper_to_parking_distance': parked.get(
+                        'upper_to_parking_distance') or 0.,
+                })
+                self._calibration_preview = preview
+                self._calibration_phase = 'retract_complete'
+                self._set_slot_position(
+                    index, 'preload_parked_estimated')
+                self._save_current_index(-1)
+                return copy.deepcopy(preview)
 
             while self._sensor_present('extruder_sensor'):
                 remaining = target - retracted
@@ -679,6 +1203,8 @@ class BunnyAce:
                 'sensor_clear_upper_bound': sensor_clear_upper_bound,
                 'sensor_clear_distance': sensor_clear_upper_bound,
                 'retract_distance': retracted,
+                'upper_to_parking_sensor_distance': 0.,
+                'upper_to_parking_distance': retracted,
             })
             self._calibration_preview = preview
             self._calibration_phase = 'retract_complete'
@@ -699,24 +1225,37 @@ class BunnyAce:
                 or preview.get('phase') != 'feed_complete'):
             raise gcmd.error('ACE：请先完成送料标定')
         if gcmd.get_int('CONFIRM', 0) != 1:
-            gcmd.respond_info(
-                'ACE：将把 T%d 回收到估算预停放位置 %.1f mm；'
-                '确认后请执行 ACE_CALIBRATE_RETRACT CONFIRM=1' % (
-                    preview['source_slot'], preview['parking_distance']))
+            if self.parking_sensor_enabled:
+                gcmd.respond_info(
+                    'ACE：将把 T%d 回抽到五通传感器解除，随后继续回抽 '
+                    '%.1f mm；确认后请执行 ACE_CALIBRATE_RETRACT CONFIRM=1' % (
+                        preview['source_slot'],
+                        self.parking_sensor_clear_move_length))
+            else:
+                gcmd.respond_info(
+                    'ACE：将把 T%d 回收到估算预停放位置 %.1f mm；'
+                    '确认后请执行 ACE_CALIBRATE_RETRACT CONFIRM=1' % (
+                        preview['source_slot'], preview['parking_distance']))
             return
         try:
             state = self._print_state()
             if state in ('printing', 'paused'):
-                raise RuntimeError('ACE：打印或暂停期间禁止距离标定')
+                raise RuntimeError('ACE：打印或暂停期间禁止自动探测料管长度')
             if not self._connected or self._info.get('status') != 'ready':
                 raise RuntimeError('ACE：设备未连接或尚未就绪')
             self._acquire_motion('距离回料标定')
             result = self._calibrate_retract()
-            gcmd.respond_info(
-                'ACE：回料标定完成，上方传感器解除上界 %.1f mm，'
-                '估算停车距离 %.1f mm；请确认后保存' % (
-                    result['sensor_clear_upper_bound'],
-                    result['retract_distance']))
+            if result.get('mode') == 'parking_sensor':
+                gcmd.respond_info(
+                    'ACE：五通传感器已解除，并已继续回抽 %.1f mm；'
+                    '请确认耗材位于五通独立支路后保存' %
+                    result['parking_offset'])
+            else:
+                gcmd.respond_info(
+                    'ACE：回料标定完成，上方传感器解除上界 %.1f mm，'
+                    '估算停车距离 %.1f mm；请确认后保存' % (
+                        result['sensor_clear_upper_bound'],
+                        result['retract_distance']))
         except Exception as exc:
             raise gcmd.error(str(exc))
         finally:
@@ -731,11 +1270,18 @@ class BunnyAce:
                 or preview.get('phase') != 'retract_complete'):
             raise gcmd.error('ACE：请先完成送料和回料标定')
         if gcmd.get_int('CONFIRM', 0) != 1:
-            gcmd.respond_info(
-                'ACE：待保存送料上界 %.1f mm、停车距离 %.1f mm；'
-                '确认后请执行 ACE_CALIBRATION_SAVE CONFIRM=1' % (
-                    preview['feed_upper_bound'],
-                    preview['parking_distance']))
+            if preview.get('mode') == 'parking_sensor':
+                gcmd.respond_info(
+                    'ACE：待保存五通传感器距离，解除后%s %.1f mm；'
+                    '确认后请执行 ACE_CALIBRATION_SAVE CONFIRM=1' % (
+                        '回抽' if preview.get('parking_direction') == 'retract'
+                        else '送料', preview['parking_offset']))
+            else:
+                gcmd.respond_info(
+                    'ACE：待保存送料上界 %.1f mm、停车距离 %.1f mm；'
+                    '确认后请执行 ACE_CALIBRATION_SAVE CONFIRM=1' % (
+                        preview['feed_upper_bound'],
+                        preview['parking_distance']))
             return
         record = copy.deepcopy(preview)
         record.update({
@@ -744,12 +1290,13 @@ class BunnyAce:
             'measured_at': time.time(),
         })
         try:
+            self._require_calibration_save_preflight(preview)
             self._save_calibration_record(record)
         except Exception as exc:
             raise gcmd.error(str(exc))
         self._calibration_phase = 'saved'
         self._calibration_preview['phase'] = 'saved'
-        gcmd.respond_info('ACE：距离标定结果已保存')
+        gcmd.respond_info('ACE：自动探测料管长度结果已保存')
 
     cmd_ACE_CALIBRATION_CANCEL_help = 'Discard the in-memory calibration preview'
 
@@ -757,7 +1304,7 @@ class BunnyAce:
         self._calibration_preview = None
         self._calibration_phase = 'idle'
         self._calibration_last_error = ''
-        gcmd.respond_info('ACE：已取消未保存的距离标定结果')
+        gcmd.respond_info('ACE：已取消未保存的料管长度探测结果')
 
     def _cold_extruder_move(self, length, speed):
         self.gcode.run_script_from_command(
@@ -769,7 +1316,12 @@ class BunnyAce:
                 and calibration_is_valid(
                     self.calibration_record,
                     self.bowden_tube_length,
-                    self.five_way_parking_margin)):
+                    self.five_way_parking_margin,
+                    parking_sensor_enabled=self.parking_sensor_enabled,
+                    parking_sensor_position=self.parking_sensor_position,
+                    parking_sensor_clear_move_length=(
+                        self.parking_sensor_clear_move_length))
+                and self.calibration_record.get('mode') != 'parking_sensor'):
             return float(self.calibration_record['parking_distance'])
         return float(self.toolchange_load_length)
 
@@ -777,7 +1329,11 @@ class BunnyAce:
         valid = calibration_is_valid(
             self.calibration_record,
             self.bowden_tube_length,
-            self.five_way_parking_margin)
+            self.five_way_parking_margin,
+            parking_sensor_enabled=self.parking_sensor_enabled,
+            parking_sensor_position=self.parking_sensor_position,
+            parking_sensor_clear_move_length=(
+                self.parking_sensor_clear_move_length))
         if valid:
             return (
                 float(self.calibration_record['parking_distance']),
@@ -845,11 +1401,15 @@ class BunnyAce:
                 if self._feed_assist_index == current:
                     self._disable_feed_assist(
                         current, allow_reconnect=False)
-                self._retract_in_chunks(
-                    current,
-                    retract_distance,
-                    self.retract_fast_speed,
-                    'PRELOAD_CLEAR')
+                if self.parking_sensor_enabled:
+                    self._sensor_guided_park(current, 'PRELOAD_CLEAR')
+                    parked_position = 'preload_parked_estimated'
+                else:
+                    self._retract_in_chunks(
+                        current,
+                        retract_distance,
+                        self.retract_fast_speed,
+                        'PRELOAD_CLEAR')
 
             if (self._sensor_present('extruder_sensor')
                     or self._sensor_present('toolhead_sensor')):
@@ -1461,9 +2021,19 @@ class BunnyAce:
         return action
 
     def _auto_drying_can_retry(self, eventtime):
-        return (
-            self._auto_drying_retry_count < self._auto_drying_max_retries
-            and eventtime >= self._auto_drying_next_retry)
+        if self._auto_drying_retry_count >= self._auto_drying_max_retries:
+            retry_cycle_at = (
+                self._auto_drying_next_retry
+                + AUTO_DRYING_RETRY_CYCLE_DELAY)
+            if eventtime < retry_cycle_at:
+                return False
+            self._auto_drying_retry_count = 0
+            self._auto_drying_next_retry = eventtime
+            self._publish_auto_drying_notice(
+                'RETRY_CYCLE_%d' % int(eventtime),
+                '自动烘干控制将在长时间退避后重新尝试。',
+                force=True)
+        return eventtime >= self._auto_drying_next_retry
 
     def _reconcile_auto_drying_pending(self, eventtime, print_state):
         token = self._auto_drying_pending_token
@@ -1625,7 +2195,8 @@ class BunnyAce:
         self._reconcile_auto_drying_pending(eventtime, state)
 
         recommended, reason = select_auto_drying_policy(
-            self._auto_drying_slots())
+            self._auto_drying_slots(),
+            getattr(self, 'material_profiles', DEFAULT_MATERIAL_PROFILES))
         if recommended > 0:
             recommended = min(recommended, self.max_dryer_temperature)
         self.auto_drying_reason = reason
@@ -1674,7 +2245,7 @@ class BunnyAce:
             return eventtime + 1.0
         if reason == 'EMPTY':
             self._publish_auto_drying_notice(
-                reason, AUTO_DRYING_MESSAGES[reason])
+                reason, build_auto_drying_message(reason, recommended))
             if (self.auto_drying_owned_by_auto
                     or self._auto_drying_pending_action == 'start'):
                 self._auto_drying_stop_required = True
@@ -1704,15 +2275,17 @@ class BunnyAce:
         if self.auto_drying_owned_by_auto and dryer_running:
             if (recommended > 0
                     and recommended < self._auto_drying_temperature_ceiling):
-                self._publish_auto_drying_notice(
-                    reason, AUTO_DRYING_MESSAGES[reason])
+                if getattr(self, 'show_material_warning', True):
+                    self._publish_auto_drying_notice(
+                        reason, build_auto_drying_message(reason, recommended))
                 self._queue_auto_drying_stop(
                     eventtime, restart_temperature=recommended)
             return eventtime + 1.0
 
-        if reason in ('UNKNOWN', 'PLA_MIXED'):
+        if (getattr(self, 'show_material_warning', True)
+                and reason in ('UNKNOWN', 'PLA_MIXED')):
             self._publish_auto_drying_notice(
-                reason, AUTO_DRYING_MESSAGES[reason])
+                reason, build_auto_drying_message(reason, recommended))
         target = recommended
         if self.auto_drying_owned_by_auto:
             target = min(
@@ -1898,7 +2471,7 @@ class BunnyAce:
         if self._connected:
             return self.reactor.NEVER
         try:
-            port = self.find_com_port('ACE')
+            port = self._resolve_serial_port()
             if port is None:
                 return eventtime + 1
             self.gcode.respond_info('ACE：正在尝试连接')
@@ -2086,7 +2659,8 @@ class BunnyAce:
         return 'retry'
 
     def _run_ace_motion(self, method, index, length, speed,
-                        stop_sensor=None):
+                        stop_sensor=None, stop_when_present=True,
+                        stop_debounce_count=1):
         if self._active_ace_motion is not None:
             raise self.printer.command_error('ACE：已有物理动作正在运行')
         self._active_ace_motion = {
@@ -2094,11 +2668,16 @@ class BunnyAce:
             'index': int(index),
             'length': float(length),
             'speed': float(speed),
+            'stop_sensor': stop_sensor or '',
+            'stop_when_present': bool(stop_when_present),
         }
         self._abort_requested = False
         try:
             result = self._run_ace_motion_request(
-                method, index, length, speed, stop_sensor=stop_sensor)
+                method, index, length, speed,
+                stop_sensor=stop_sensor,
+                stop_when_present=stop_when_present,
+                stop_debounce_count=stop_debounce_count)
             if self._abort_requested:
                 raise self.printer.command_error('ACE：物理动作已由用户终止')
             return result
@@ -2106,7 +2685,8 @@ class BunnyAce:
             self._active_ace_motion = None
 
     def _run_ace_motion_request(self, method, index, length, speed,
-                                stop_sensor=None):
+                                stop_sensor=None, stop_when_present=True,
+                                stop_debounce_count=1):
         operation = '%s slot=%d length=%.1f' % (method, index, length)
         allow_reconnect = self._toolchange_context is not None
         while True:
@@ -2131,17 +2711,38 @@ class BunnyAce:
                 self.ace_request_timeout + .5,
                 float(length) / float(speed) + 2.5)
             queued_stop = [None]
+            matching_samples = [0]
+
+            def stop_motion(token=None):
+                if method == 'feed_filament':
+                    return self._stop_feed(index, token=token)
+                if method == 'unwind_filament':
+                    return self._stop_unwind(index, token=token)
+                raise self.printer.command_error(
+                    'ACE：不支持停止物理动作 %s' % method)
 
             def monitor_stop_sensor():
-                if (stop_sensor is None or queued_stop[0] is not None
-                        or not self._sensor_present(stop_sensor)):
+                if stop_sensor is None or queued_stop[0] is not None:
+                    return
+                sensor_matches = (
+                    self._sensor_present(stop_sensor)
+                    == bool(stop_when_present))
+                matching_samples[0] = (
+                    matching_samples[0] + 1 if sensor_matches else 0)
+                if matching_samples[0] < max(1, int(stop_debounce_count)):
                     return
                 self._set_toolchange_phase(
-                    'UPPER_SENSOR_TRIGGERED',
-                    stop_feed_requested=True)
-                self.gcode.respond_info(
-                    'ACE：上方耗材传感器已触发，停止 ACE 送料并交给挤出机继续送料')
-                queued_stop[0] = self._queue_stop_feed(index)
+                    'SENSOR_STOP_REQUESTED',
+                    stop_sensor=stop_sensor,
+                    stop_sensor_state=bool(stop_when_present))
+                if method == 'feed_filament':
+                    self.gcode.respond_info(
+                        'ACE：%s 已触发，正在停止 ACE 送料' % stop_sensor)
+                    queued_stop[0] = self._queue_stop_feed(index)
+                else:
+                    self.gcode.respond_info(
+                        'ACE：%s 已解除，正在停止 ACE 回抽' % stop_sensor)
+                    queued_stop[0] = self._queue_stop_unwind(index)
 
             if not self._wait_for_request(
                     token, timeout=motion_timeout,
@@ -2158,7 +2759,7 @@ class BunnyAce:
                 return {'code': 0, 'recovered': True, 'uncertain': True}
 
             if queued_stop[0] is not None:
-                self._stop_feed(index, token=queued_stop[0])
+                stop_motion(token=queued_stop[0])
                 self.wait_ace_ready(
                     timeout=self._motion_stop_ready_timeout(length, speed))
                 return {
@@ -2175,10 +2776,9 @@ class BunnyAce:
                 token.get('sent_time', self.reactor.monotonic())
                 + (float(length) / float(speed)) + .1)
             while self.reactor.monotonic() < motion_deadline:
-                if (stop_sensor is not None
-                        and self._sensor_present(stop_sensor)):
-                    monitor_stop_sensor()
-                    self._stop_feed(index, token=queued_stop[0])
+                monitor_stop_sensor()
+                if queued_stop[0] is not None:
+                    stop_motion(token=queued_stop[0])
                     self.wait_ace_ready(
                         timeout=self._motion_stop_ready_timeout(length, speed))
                     return {
@@ -2271,6 +2871,16 @@ class BunnyAce:
             operation='stop feed filament',
             high_priority=True)
 
+    def _queue_stop_unwind(self, index):
+        return self.send_request(
+            request={
+                'method': 'stop_unwind_filament',
+                'params': {'index': index},
+            },
+            callback=lambda self, response: None,
+            operation='stop unwind filament',
+            high_priority=True)
+
     def _stop_feed(self, index, token=None):
         if token is not None:
             if not self._wait_for_request(
@@ -2307,7 +2917,24 @@ class BunnyAce:
             'ACE：槽位 T%d 已停止送料' % index)
         return response
 
-    def _stop_unwind(self, index):
+    def _stop_unwind(self, index, token=None):
+        if token is not None:
+            if not self._wait_for_request(
+                    token, timeout=self.ace_request_timeout + 1.):
+                self._mark_connection_lost(
+                    'stop unwind filament response timeout')
+                self._serial_disconnect(
+                    'stop unwind filament response timeout',
+                    already_marked=True)
+                self._schedule_reconnect()
+            if not token.get('lost'):
+                response = token.get('response') or {}
+                if (response.get('code', 0) == 0
+                        or 'FORBIDDEN' in
+                        response.get('msg', '').upper()):
+                    self.gcode.respond_info(
+                        'ACE：槽位 T%d 已停止回抽' % index)
+                    return response
         try:
             response = self._request_sync(
                 request={
@@ -2357,9 +2984,13 @@ class BunnyAce:
         finally:
             self._release_motion('手动送料')
 
-    def _retract(self, index, length, speed):
+    def _retract(self, index, length, speed, stop_sensor=None,
+                 stop_when_present=True, stop_debounce_count=1):
         return self._run_ace_motion(
-            'unwind_filament', index, length, speed)
+            'unwind_filament', index, length, speed,
+            stop_sensor=stop_sensor,
+            stop_when_present=stop_when_present,
+            stop_debounce_count=stop_debounce_count)
 
     def _set_toolchange_phase(self, phase, **values):
         if self._toolchange_context is None:
@@ -2424,6 +3055,9 @@ class BunnyAce:
                 compensation_used=compensation_used)
             result = self._feed(
                 tool, step, segment_speed, stop_sensor=sensor_name)
+            if result.get('uncertain'):
+                raise AceMotionUncertainError(
+                    'ACE：分段送料期间连接状态不确定，已停止后续送料')
             fed += step
             if is_compensation:
                 compensation_used += step
@@ -2505,15 +3139,21 @@ class BunnyAce:
                     phase + '_FAST',
                     retract_remaining=slow_length,
                     retract_speed=speed)
-                self._retract(index, fast_remaining, speed)
+                result = self._retract(index, fast_remaining, speed) or {}
+                if result.get('uncertain'):
+                    raise AceMotionUncertainError(
+                        'ACE：快速回抽期间连接状态不确定，已停止后续回抽')
                 self.wait_ace_ready()
             if slow_length > 0:
                 self._set_toolchange_phase(
                     phase + '_APPROACH',
                     retract_remaining=0.,
                     retract_speed=self.retract_parking_speed)
-                self._retract(
-                    index, slow_length, self.retract_parking_speed)
+                result = self._retract(
+                    index, slow_length, self.retract_parking_speed) or {}
+                if result.get('uncertain'):
+                    raise AceMotionUncertainError(
+                        'ACE：停放回抽期间连接状态不确定，已停止后续回抽')
                 self.wait_ace_ready()
             return
 
@@ -2532,7 +3172,10 @@ class BunnyAce:
                 segment_phase,
                 retract_remaining=max(0., remaining - step),
                 retract_speed=segment_speed)
-            self._retract(index, step, segment_speed)
+            result = self._retract(index, step, segment_speed) or {}
+            if result.get('uncertain'):
+                raise AceMotionUncertainError(
+                    'ACE：分段回抽期间连接状态不确定，已停止后续回抽')
             remaining -= step
             retracted += step
             self.wait_ace_ready()
@@ -2573,31 +3216,113 @@ class BunnyAce:
 
     def _abort_toolchange(self, tool, gcmd, endless_spool_was_enabled,
                           message):
-        details = self._filament_failure_details()
-        full_message = '%s；%s' % (message, details)
-        self._toolchange_last_error = full_message
-        self._set_toolchange_phase(
-            'FAILED_FILAMENT_FEED', error=full_message,
-            failed_phase=(self._toolchange_context or {}).get('phase'))
-        try:
-            if 0 <= tool < 4:
-                self._disable_feed_assist(tool)
-        except Exception:
-            logging.exception('ACE: Failed to disable feed assist after '
-                              'toolchange failure')
+        full_message = self._finalize_toolchange_failure(
+            message, 'FAILED_FILAMENT_FEED')
         self._park_in_progress = False
         if endless_spool_was_enabled:
             self.endless_spool_enabled = True
         self._toolchange_context = None
+        self.gcode.respond_info(
+            'ACE：已在上述位置停止，失败后不会自动继续送料或回抽')
+        raise FilamentFeedError(full_message)
+
+    def _finalize_toolchange_failure(self, error, failure_phase,
+                                     manual_recovery=False):
+        context = copy.deepcopy(self._toolchange_context or {})
+        failed_phase = context.get('phase', 'UNKNOWN')
+        message = str(error)
+        if manual_recovery:
+            message = (
+                '%s；阶段 %s 的物理动作结果不确定或不可幂等，'
+                '禁止自动重放，需人工检查耗材位置后恢复' % (
+                    message, failed_phase))
+        try:
+            details = self._filament_failure_details()
+        except Exception as detail_error:
+            details = '失败阶段=%s；传感器诊断读取失败=%s' % (
+                failed_phase, detail_error)
+        full_message = '%s；%s' % (message, details)
+
+        self._cancel_toolchange_recovery()
+        self._connection_pause_owned = False
+        self._pending_feed_assist_restore = -1
+        self._toolchange_last_error = full_message
+        self._set_toolchange_phase(
+            failure_phase,
+            error=full_message,
+            failed_phase=failed_phase,
+            recovery='manual_required' if manual_recovery else 'none')
+
+        source = int(context.get('from', -1))
+        target = int(context.get('to', -1))
+        uncertain_slots = []
+        if (failed_phase in ('CUTTING', 'SENSOR_CONFLICT',
+                             'PREFLIGHT_SENSOR_CONFLICT')
+                or failed_phase.startswith('OLD_')):
+            uncertain_slots.append(source)
+        if (failed_phase.startswith('ACE_FEED')
+                or failed_phase.startswith('EXTRUDER_FEED')):
+            uncertain_slots.append(target)
+        for index in set(uncertain_slots):
+            if 0 <= index < 4:
+                try:
+                    self._set_slot_position(index, 'unknown')
+                except Exception:
+                    logging.exception(
+                        'ACE: Failed to persist uncertain slot position')
+
+        assist_index = self._feed_assist_index
+        assist_cleanup_error = None
+        try:
+            if self._connected and assist_index >= 0:
+                self._disable_feed_assist(
+                    assist_index, allow_reconnect=False)
+            elif assist_index >= 0:
+                assist_cleanup_error = (
+                    '连接已断开，无法确认 T%d 辅助送料已停止' %
+                    assist_index)
+        except Exception as cleanup_error:
+            assist_cleanup_error = '停止 T%d 辅助送料失败=%s' % (
+                assist_index, cleanup_error)
+            logging.exception(
+                'ACE: Failed to disable feed assist during cleanup')
+        finally:
+            self._feed_assist_index = -1
+        if assist_cleanup_error:
+            full_message = '%s；%s' % (
+                full_message, assist_cleanup_error)
+            self._toolchange_last_error = full_message
+            self._set_toolchange_phase(
+                failure_phase,
+                error=full_message,
+                failed_phase=failed_phase,
+                recovery='manual_required' if manual_recovery else 'none')
+
         paused = self._pause_for_filament_failure()
         self.gcode.respond_info(
             'ACE：%s；%s' % (
                 full_message,
-                '打印已暂停，请检查耗材路径' if paused
+                '打印已暂停，请人工检查后恢复' if paused
                 else '当前没有正在打印的任务，未执行暂停'))
-        self.gcode.respond_info(
-            'ACE：已在上述位置停止，失败后不会自动继续送料或回抽')
-        raise FilamentFeedError(full_message)
+        return full_message
+
+    def _raise_toolchange_sensor_conflict(self, gcmd, message,
+                                          source, target):
+        self._toolchange_last_error = None
+        self._toolchange_context = {
+            'kind': 'manual',
+            'from': source,
+            'to': target,
+            'phase': 'PREFLIGHT_SENSOR_CONFLICT',
+            'resume_attempts': 0,
+            'started': self.reactor.monotonic(),
+        }
+        try:
+            full_message = self._finalize_toolchange_failure(
+                message, 'FAILED_SENSOR_CONFLICT')
+        finally:
+            self._toolchange_context = None
+        raise gcmd.error(full_message)
 
     cmd_ACE_RETRACT_help = 'Retracts filament back to ACE'
 
@@ -2696,12 +3421,16 @@ class BunnyAce:
         tool = gcmd.get_int('TOOL')
         return self._change_tool(tool, gcmd)
 
-    def _change_tool(self, tool, gcmd, force_full_unload=False):
+    def _change_tool(self, tool, gcmd, force_full_unload=False,
+                     motion_already_owned=False):
         sensor_extruder = self.printer.lookup_object("filament_switch_sensor %s" % "extruder_sensor", None)
 
         if tool < -1 or tool >= 4:
             raise gcmd.error('工具槽位错误')
-        if self._motion_owner is not None:
+        if (motion_already_owned
+                and self._motion_owner != '更换料卷'):
+            raise gcmd.error('ACE：更换料卷未持有预期的运动互斥')
+        if not motion_already_owned and self._motion_owner is not None:
             raise gcmd.error(
                 'ACE：%s 正在运行，不能同时启动普通换料' %
                 self._motion_owner)
@@ -2712,6 +3441,16 @@ class BunnyAce:
         same_tool_partial_load = False
         if was == tool:
             if tool == -1:
+                upper = self._sensor_present('extruder_sensor')
+                lower = self._sensor_present('toolhead_sensor')
+                if upper or lower:
+                    self._raise_toolchange_sensor_conflict(
+                        gcmd,
+                        'ACE：保存状态为未装载，但%s传感器仍有料；'
+                        '无法确定所属槽位，禁止盲目回抽' % (
+                            '上下' if upper and lower
+                            else '上方' if upper else '下方'),
+                        was, tool)
                 gcmd.respond_info('ACE：当前已经是未装载状态')
                 return
             position = self.slot_positions[tool]
@@ -2730,8 +3469,10 @@ class BunnyAce:
                         '下方传感器' if position == 'toolhead'
                         else '上方传感器'))
             else:
-                raise gcmd.error(
-                    'ACE：当前槽位与传感器状态矛盾，禁止跳过安全换料流程')
+                self._raise_toolchange_sensor_conflict(
+                    gcmd,
+                    'ACE：当前槽位与传感器状态矛盾，禁止跳过安全换料流程',
+                    was, tool)
 
         if self._toolchange_context is not None:
             raise gcmd.error('ACE：另一个换料流程正在执行')
@@ -2763,7 +3504,8 @@ class BunnyAce:
             'resume_attempts': 0,
             'started': self.reactor.monotonic(),
         }
-        self._acquire_motion('普通换料')
+        if not motion_already_owned:
+            self._acquire_motion('普通换料')
         gcmd.respond_info(
             'ACE：换料 %s -> %s 已开始' % (
                 self._tool_label(was), self._tool_label(tool)))
@@ -2784,6 +3526,7 @@ class BunnyAce:
                 slot_position = self.slot_positions[was]
                 upper_detected = bool(sensor_extruder.runout_helper.filament_present)
                 lower_detected = self._check_endstop_state('toolhead_sensor')
+                parking_sensor_cleared = False
                 self.gcode.respond_info(
                     'ACE：卸料状态：槽位位置=%s，兼容位置=%s，'
                     '上方传感器=%s，下方传感器=%s' % (
@@ -2808,10 +3551,12 @@ class BunnyAce:
                     self.gcode.respond_info(
                         'ACE：耗材只到下方传感器，跳过切刀并直接安全回抽')
                 elif lower_detected:
+                    self._set_toolchange_phase('SENSOR_CONFLICT')
                     self._set_slot_position(was, 'unknown')
                     raise gcmd.error(
                         'ACE：下方传感器有料但槽位位置不可信，已停止换料')
                 elif slot_position == 'nozzle':
+                    self._set_toolchange_phase('SENSOR_CONFLICT')
                     self._set_slot_position(was, 'unknown')
                     raise gcmd.error(
                         'ACE：保存位置为喷嘴但下方传感器未触发，已停止换料')
@@ -2830,9 +3575,27 @@ class BunnyAce:
                             'OLD_TOOLHEAD_RETRACT',
                             retract_attempt=retract_attempts + 1)
                         self._extruder_move(-50, 10)
-                        self._retract(was, 100, self.retract_fast_speed)
+                        if (self.parking_sensor_enabled
+                                and self._sensor_present('parking_sensor')):
+                            retract_result = self._retract(
+                                was, 100, self.retract_fast_speed,
+                                stop_sensor='parking_sensor',
+                                stop_when_present=False,
+                                stop_debounce_count=(
+                                    self.parking_sensor_debounce_count))
+                            parking_sensor_cleared = bool(
+                                retract_result.get('stopped_by_sensor'))
+                        else:
+                            self._retract(
+                                was, 100, self.retract_fast_speed)
                         self.wait_ace_ready()
                         retract_attempts += 1
+                        if (parking_sensor_cleared
+                                and bool(sensor_extruder.runout_helper.filament_present)):
+                            self._set_toolchange_phase('SENSOR_CONFLICT')
+                            raise gcmd.error(
+                                'ACE：五通传感器已解除但上方传感器仍有料，'
+                                '传感器顺序或电平配置错误')
                     self.variables['ace_filament_pos'] = "bowden"
 
                 self.wait_ace_ready()
@@ -2840,14 +3603,25 @@ class BunnyAce:
                     parking_distance = float(
                         self.toolchange_retract_length)
                     parked_position = 'internal_or_unknown'
+                    self._retract_in_chunks(
+                        was,
+                        parking_distance,
+                        self.retract_fast_speed,
+                        'OLD_BOWDEN_RETRACT')
+                elif self.parking_sensor_enabled:
+                    self._sensor_guided_park(
+                        was,
+                        'OLD_BOWDEN_RETRACT',
+                        sensor_already_cleared=parking_sensor_cleared)
+                    parked_position = 'preload_parked_estimated'
                 else:
                     parking_distance, parked_position = (
                         self._parking_retract_profile())
-                self._retract_in_chunks(
-                    was,
-                    parking_distance,
-                    self.retract_fast_speed,
-                    'OLD_BOWDEN_RETRACT')
+                    self._retract_in_chunks(
+                        was,
+                        parking_distance,
+                        self.retract_fast_speed,
+                        'OLD_BOWDEN_RETRACT')
                 self.variables['ace_filament_pos'] = "spliter"
                 self._set_slot_position(was, parked_position)
                 self.variables['ace_current_index'] = -1
@@ -2885,6 +3659,17 @@ class BunnyAce:
                 self.gcode.respond_info(
                     'ACE：送料失败，换料已停止，打印保持暂停')
                 return
+            failed_phase = (self._toolchange_context or {}).get(
+                'phase', 'UNKNOWN')
+            unsafe_to_replay = (
+                isinstance(exc, AceMotionUncertainError)
+                or failed_phase == 'CUTTING'
+                or failed_phase.startswith('OLD_TOOLHEAD_RETRACT')
+                or failed_phase.startswith('OLD_BOWDEN_RETRACT'))
+            if unsafe_to_replay:
+                self._finalize_toolchange_failure(
+                    exc, 'FAILED_MANUAL_RECOVERY', manual_recovery=True)
+                raise
             transport_error = self._is_transport_error(exc)
             if transport_error:
                 resume_after_success = self._pause_for_toolchange_recovery()
@@ -2900,21 +3685,12 @@ class BunnyAce:
                     self.gcode.respond_info(
                         'ACE：换料已暂停，等待自动重连恢复')
                     return
-            self._cancel_toolchange_recovery()
-            self._toolchange_last_error = str(exc)
-            self._set_toolchange_phase(
-                'FAILED_AMBIGUOUS', error=str(exc))
-            self._pending_feed_assist_restore = -1
-            if self._connected and self._feed_assist_index >= 0:
-                try:
-                    self._disable_feed_assist(
-                        self._feed_assist_index, allow_reconnect=False)
-                except Exception:
-                    logging.exception(
-                        'ACE: Failed to disable feed assist during cleanup')
+            self._finalize_toolchange_failure(
+                exc, 'FAILED_AMBIGUOUS')
             raise
         finally:
-            self._release_motion('普通换料')
+            if not motion_already_owned:
+                self._release_motion('普通换料')
             self._park_in_progress = False
             if endless_spool_was_enabled:
                 self.endless_spool_enabled = True
@@ -2947,13 +3723,32 @@ class BunnyAce:
     def _find_next_available_slot(self, current_slot):
         """Find the next available slot with filament for endless spool"""
         slots = self._info.get('slots') or []
+        require_match = getattr(
+            self, 'endless_spool_require_same_material', False)
+
+        def slot_material(index):
+            inventory_material = (
+                self.inventory[index].get('material')
+                if index < len(self.inventory) else '')
+            hardware_material = (
+                slots[index].get('type')
+                if index < len(slots) else '')
+            return str(
+                inventory_material or hardware_material or '').strip().upper()
+
+        current_material = slot_material(current_slot)
+        if require_match and not current_material:
+            return -1
         for i in range(4):
             next_slot = (current_slot + 1 + i) % 4
             if next_slot != current_slot:
                 # Check both inventory and ACE status
                 if (len(slots) > next_slot
                         and self.inventory[next_slot]["status"] == "ready"
-                        and slots[next_slot].get('status') == 'ready'):
+                        and slots[next_slot].get('status') == 'ready'
+                        and (not require_match
+                             or slot_material(next_slot)
+                             == current_material)):
                     return next_slot
         return -1  # No available slots
 
@@ -3066,7 +3861,16 @@ class BunnyAce:
 
             # Step 4: Update current index and save state
             self.variables['ace_current_index'] = next_tool
+            self.variables['ace_filament_pos'] = 'upper_sensor'
+            self._set_slot_position(
+                current_tool, 'internal_or_unknown', persist=False)
+            self._set_slot_position(
+                next_tool, 'upper_sensor', persist=False)
+            self._save_json_variable(
+                'ace_slot_positions', self.slot_positions)
             self.gcode.run_script_from_command('SAVE_VARIABLE VARIABLE=ace_current_index VALUE=' + str(next_tool))
+            self.gcode.run_script_from_command(
+                "SAVE_VARIABLE VARIABLE=ace_filament_pos VALUE='\"upper_sensor\"'")
             
             completed = True
             self.gcode.respond_info(f"ACE：无限续料切换完成，当前使用 T{next_tool}")
@@ -3138,7 +3942,17 @@ class BunnyAce:
                 return port
         return None
 
+    def _resolve_serial_port(self):
+        configured = str(self.serial_name or '').strip()
+        if configured and configured.lower() not in ('auto', 'detect'):
+            return configured
+        return self.find_com_port('ACE')
+
     def cmd_ACE_DEBUG(self, gcmd):
+        if not self.enable_debug_rpc:
+            raise gcmd.error(
+                'ACE：原始 RPC 调试已禁用；仅在开发环境中设置 '
+                'enable_debug_rpc: True 后使用')
         method = gcmd.get('METHOD')
         params = gcmd.get('PARAMS', '{}')
 
@@ -3154,7 +3968,13 @@ class BunnyAce:
 
     def get_status(self, eventtime=None):
         status = copy.deepcopy(self._info)
-        status['driver_version'] = ACEPROSV08_DRIVER_VERSION
+        status['driver_version'] = ACE_PRO_CONTROL_CENTER_DRIVER_VERSION
+        status['material_profiles'] = copy.deepcopy(self.material_profiles)
+        status['max_dryer_temperature'] = int(self.max_dryer_temperature)
+        status['material_warning_enabled'] = getattr(
+            self, 'show_material_warning', True)
+        status['endless_spool_require_same_material'] = (
+            self.endless_spool_require_same_material)
         status['endless_spool'] = {
             'enabled': self.endless_spool_enabled,
             'runout_detected': self.endless_spool_runout_detected,
@@ -3181,12 +4001,20 @@ class BunnyAce:
             'generation': self._connection_generation,
             'last_disconnect_reason': self._last_disconnect_reason,
             'feed_assist_restore_pending': self._pending_feed_assist_restore >= 0,
+            'toolchange_recovery_required': (
+                self._pending_toolchange_recovery is not None),
         }
         status['toolchange'] = {
-            'active': context is not None,
+            'active': (
+                context is not None
+                or self._pending_toolchange_recovery is not None),
             'context': context,
             'last_error': self._toolchange_last_error,
             'cancel_requested': self._abort_requested,
+            'recovery_required': (
+                self._pending_toolchange_recovery is not None),
+            'recovery': copy.deepcopy(
+                self._pending_toolchange_recovery) or {},
         }
         status['intermittent_feed'] = self.intermittent_feed
         status['intermittent_retract'] = self.intermittent_retract
@@ -3204,12 +4032,27 @@ class BunnyAce:
         calibration_valid = calibration_is_valid(
             self.calibration_record,
             self.bowden_tube_length,
-            self.five_way_parking_margin)
+            self.five_way_parking_margin,
+            parking_sensor_enabled=self.parking_sensor_enabled,
+            parking_sensor_position=self.parking_sensor_position,
+            parking_sensor_clear_move_length=(
+                self.parking_sensor_clear_move_length))
+        status['parking_sensor'] = {
+            'available': self.parking_sensor_enabled,
+            'detected': (
+                self._sensor_present('parking_sensor')
+                if self.parking_sensor_enabled else False),
+            'position': self.parking_sensor_position,
+            'clear_move_length': float(
+                self.parking_sensor_clear_move_length),
+            'debounce_count': int(self.parking_sensor_debounce_count),
+        }
         status['calibration'] = {
             'available': True,
             'valid': calibration_valid,
             'stale': bool(self.calibration_record) and not calibration_valid,
             'phase': self._calibration_phase,
+            'mode': str(calibration_source.get('mode') or 'legacy_feed'),
             'selected_slot': int(
                 calibration_source.get('source_slot', -1)),
             'feed_completed': float(
@@ -3224,6 +4067,18 @@ class BunnyAce:
                 calibration_source.get('retract_distance', 0.)),
             'parking_distance': float(
                 calibration_source.get('parking_distance', 0.)),
+            'parking_sensor_cleared': bool(
+                calibration_source.get('parking_sensor_cleared', False)),
+            'parking_direction': str(
+                calibration_source.get('parking_direction') or ''),
+            'parking_offset': float(
+                calibration_source.get('parking_offset', 0.)),
+            'upper_to_parking_sensor_distance': float(
+                calibration_source.get(
+                    'upper_to_parking_sensor_distance', 0.)),
+            'upper_to_parking_distance': float(
+                calibration_source.get('upper_to_parking_distance', 0.)),
+            'bowden_tube_length': float(self.bowden_tube_length),
             'last_error': self._calibration_last_error,
         }
         try:
@@ -3251,8 +4106,11 @@ class BunnyAce:
         temp = gcmd.get_int('TEMP', 0)
         if not color_str or not material or temp <= 0:
             raise gcmd.error('除 EMPTY=1 外，必须设置 COLOR、MATERIAL 和 TEMP')
-        color = [int(x) for x in color_str.split(',')]
-        if len(color) != 3:
+        try:
+            color = [int(x.strip()) for x in color_str.split(',')]
+        except (TypeError, ValueError):
+            raise gcmd.error('COLOR 必须是 0-255 范围内的 R,G,B 格式')
+        if len(color) != 3 or any(value < 0 or value > 255 for value in color):
             raise gcmd.error('COLOR 必须是 R,G,B 格式')
         self.inventory[idx] = {
             "status": "ready",
@@ -3365,54 +4223,72 @@ class BunnyAce:
             'ACE：已请求停止当前物理动作并终止换料；'
             '再次换料前请检查上下传感器')
 
-    cmd_ACE_CHANGE_SPOOL_help = 'Change spool for a specific index - INDEX= (retracts filament from tube, unloads if loaded first)'
+    cmd_ACE_CHANGE_SPOOL_help = (
+        'Change spool for a specific index - INDEX= CONFIRM=1')
 
     def cmd_ACE_CHANGE_SPOOL(self, gcmd):
         index = gcmd.get_int('INDEX', None)
-        
+
         if index is None:
             raise gcmd.error('必须提供 INDEX 参数')
-        
+
         if index < 0 or index >= 4:
             raise gcmd.error('槽位编号错误，必须是 0-3')
-        
-        gcmd.respond_info(f"ACE：正在更换槽位 T{index} 的料卷")
-        
-        # Check if this slot is currently loaded (active tool)
-        current_tool = self.variables.get('ace_current_index', -1)
-        
-        if current_tool == index:
-            # If this is the currently loaded tool, unload it first (T-1)
-            gcmd.respond_info(f"ACE：T{index} 当前已装载，先执行卸料")
-            # Create a proper gcode command to unload the tool
-            unload_cmd = "ACE_CHANGE_TOOL TOOL=-1"
-            self.gcode.run_script_from_command(unload_cmd)
-            gcmd.respond_info("ACE：耗材已卸载")
-        
-        # Check if slot is not empty (has filament loaded in the system)
-        slot_status = None
-        if hasattr(self, '_info') and self._info and 'slots' in self._info:
-            slot_status = self._info['slots'][index]['status']
-        
-        inventory_status = self.inventory[index]['status']
-        
-        # If slot is not empty or has filament in the system, retract it
-        if (slot_status and slot_status != 'empty') or (inventory_status and inventory_status != 'empty'):
-            gcmd.respond_info(f"ACE：正在从特氟龙管回收 T{index} 耗材")
+        if gcmd.get_int('CONFIRM', 0) != 1:
             gcmd.respond_info(
-                f"ACE：回收距离 {self.bowden_tube_length} mm，速度 "
-                f"{self.retract_speed} mm/s")
-            
-            try:
-                self._retract(index, self.bowden_tube_length, self.retract_speed)
-                gcmd.respond_info(f"ACE：T{index} 耗材已回收")
-            except Exception as e:
-                gcmd.respond_info(f"ACE：回收耗材时出错：{str(e)}")
-                raise gcmd.error(f"ACE：回收耗材失败：{str(e)}")
-        else:
-            gcmd.respond_info(f"ACE：T{index} 已为空，无需回收")
-        
-        gcmd.respond_info(f"ACE：T{index} 料卷更换流程完成")
+                'ACE：更换 T%d 料卷会执行物理回抽；确认后请执行 '
+                'ACE_CHANGE_SPOOL INDEX=%d CONFIRM=1' % (index, index))
+            return
+        if self._print_state() in ('printing', 'paused'):
+            raise gcmd.error('ACE：打印或暂停期间禁止更换料卷')
+
+        self._acquire_motion('更换料卷')
+        try:
+            gcmd.respond_info('ACE：正在更换槽位 T%d 的料卷' % index)
+            current_tool = int(
+                self.variables.get('ace_current_index', -1))
+            if current_tool == index:
+                gcmd.respond_info(
+                    'ACE：T%d 当前已装载，先执行完整卸料' % index)
+                self._change_tool(
+                    -1, gcmd, force_full_unload=True,
+                    motion_already_owned=True)
+                if (int(self.variables.get('ace_current_index', -1)) != -1
+                        or self._toolchange_last_error):
+                    raise gcmd.error(
+                        'ACE：T%d 完整卸料未成功，已停止更换料卷' % index)
+                gcmd.respond_info(
+                    'ACE：T%d 已完整卸载；不再执行第二次额外回抽' % index)
+                gcmd.respond_info(
+                    'ACE：T%d 料卷更换流程完成' % index)
+                return
+
+            slots = (self._info or {}).get('slots') or []
+            slot_status = (
+                slots[index].get('status') if len(slots) > index else None)
+            inventory_status = (
+                (self.inventory[index] or {}).get('status')
+                if len(self.inventory) > index else None)
+            if ((slot_status and slot_status != 'empty')
+                    or (inventory_status and inventory_status != 'empty')):
+                gcmd.respond_info(
+                    'ACE：正在从特氟龙管回收 T%d 耗材' % index)
+                result = self._retract(
+                    index, self.bowden_tube_length,
+                    self.retract_speed) or {}
+                if result.get('uncertain'):
+                    raise AceMotionUncertainError(
+                        'ACE：料卷回抽结果不确定，禁止重复发送')
+                gcmd.respond_info('ACE：T%d 耗材已回收' % index)
+            else:
+                gcmd.respond_info('ACE：T%d 已为空，无需回收' % index)
+            gcmd.respond_info('ACE：T%d 料卷更换流程完成' % index)
+        except Exception as exc:
+            gcmd.respond_info('ACE：更换 T%d 料卷失败：%s' % (
+                index, exc))
+            raise
+        finally:
+            self._release_motion('更换料卷')
 
 
 def load_config(config):

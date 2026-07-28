@@ -36,6 +36,24 @@ class FakeGcode:
         self.messages.append(message)
 
 
+class FailingSaveGcode(FakeGcode):
+    def run_script_from_command(self, script):
+        self.scripts.append(script)
+        if script.startswith("SAVE_VARIABLE VARIABLE=ace_calibration"):
+            raise RuntimeError("simulated saved_variables write failure")
+
+
+class FailingScriptGcode(FakeGcode):
+    def __init__(self, failing_script):
+        super().__init__()
+        self.failing_script = failing_script
+
+    def run_script_from_command(self, script):
+        self.scripts.append(script)
+        if script == self.failing_script:
+            raise RuntimeError("simulated %s failure" % script)
+
+
 class FakeGcmd:
     def __init__(self, values=None):
         self.values = values or {}
@@ -64,6 +82,9 @@ class FakePrintStats:
 
 class FakeReactor:
     def monotonic(self):
+        return 0.0
+
+    def pause(self, _when):
         return 0.0
 
 
@@ -96,6 +117,11 @@ def make_calibration_data_ace(record=None, bowden=190.0, margin=20.0):
     ace = make_state_ace()
     ace.bowden_tube_length = bowden
     ace.five_way_parking_margin = margin
+    ace.parking_sensor_enabled = False
+    ace.parking_sensor_position = "after_five_way"
+    ace.parking_sensor_clear_move_length = 75.0
+    ace.parking_sensor_debounce_count = 3
+    ace.calibration_max_retract_length = 1500.0
     if record is not None:
         ace.variables["ace_calibration"] = json.dumps(record)
     return ace
@@ -109,6 +135,8 @@ def make_motion_ace(trigger_after_feed_calls=2):
     ace._connected = True
     ace._info = {"status": "ready"}
     ace._motion_owner = None
+    ace._connection_state = "connected"
+    ace._toolchange_context = None
     ace._calibration_preview = None
     ace._calibration_phase = "idle"
     ace._calibration_last_error = ""
@@ -119,6 +147,8 @@ def make_motion_ace(trigger_after_feed_calls=2):
     ace.feed_slip_compensation_length = 0.0
     ace.feed_speed = 80
     ace.retract_speed = 80
+    ace.retract_fast_speed = 120.0
+    ace.retract_parking_speed = 25.0
     ace.feed_lengths = []
 
     def sensor_present(name):
@@ -178,6 +208,7 @@ def make_preload_ace(confirm=1, print_state="standby", upper=False,
     ace.retract_fast_speed = 120.0
     ace.toolchange_retract_length = 1200.0
     ace._feed_assist_index = -1
+    ace._connection_pause_owned = False
     ace.toolhead_feed_fast_length = 10.0
     ace.toolhead_feed_fast_step = 5.0
     ace.toolhead_feed_fast_speed = 8.0
@@ -186,6 +217,7 @@ def make_preload_ace(confirm=1, print_state="standby", upper=False,
     ace.toolhead_sensor_max_feed_length = 20.0
     ace.toolhead_sensor_to_nozzle_length = 80.0
     ace._info["slots"] = [{"status": "ready"} for _ in range(4)]
+    ace.inventory = [{"status": "ready"} for _ in range(4)]
 
     def sensor_present(name):
         if name == "extruder_sensor":
@@ -211,8 +243,11 @@ def make_preload_ace(confirm=1, print_state="standby", upper=False,
     ace._feed_until_sensor = feed_until_sensor
     ace._enable_feed_assist = lambda index: ace.motion_calls.append(
         ("enable_assist", index))
-    ace._disable_feed_assist = lambda index, **_kwargs: ace.motion_calls.append(
-        ("disable_assist", index))
+    def disable_feed_assist(index, **_kwargs):
+        ace.motion_calls.append(("disable_assist", index))
+        ace._feed_assist_index = -1
+
+    ace._disable_feed_assist = disable_feed_assist
     def retract_in_chunks(index, length, speed, phase):
         ace.motion_calls.append(
             ("ace_retract", index, float(length), speed, phase))
@@ -399,6 +434,58 @@ class AceSlotPositionTests(unittest.TestCase):
 
 
 class AceCalibrationDataTests(unittest.TestCase):
+    def test_parking_sensor_position_requires_supported_value(self):
+        self.assertEqual(
+            ace_driver.normalize_parking_sensor_position('after_five_way'),
+            'after_five_way',
+        )
+        with self.assertRaises(ValueError):
+            ace_driver.normalize_parking_sensor_position('sideways')
+
+    def test_parking_sensor_correction_uses_retract_direction(self):
+        self.assertEqual(
+            ace_driver.calculate_sensor_parking_correction(
+                'after_five_way', 75),
+            ('retract', 75),
+        )
+        self.assertEqual(
+            ace_driver.calculate_sensor_parking_correction(
+                'before_five_way', 40),
+            ('feed', 40),
+        )
+
+    def test_feed_calibration_does_not_count_feed_request_as_distance(self):
+        ace = make_motion_ace(trigger_after_feed_calls=1)
+        ace.parking_sensor_enabled = True
+        old_sensor_present = ace._sensor_present
+        ace._sensor_present = lambda name: (
+            bool(ace.feed_lengths) if name == "parking_sensor"
+            else old_sensor_present(name))
+        old_feed = ace._feed
+        ace._feed = lambda *args, **kwargs: (
+            old_feed(*args, **kwargs) or {"stopped_by_sensor": True})
+
+        preview = ace._calibrate_feed(0)
+
+        self.assertEqual(ace.feed_lengths, [20.0])
+        self.assertEqual(preview['feed_completed'], 0.0)
+        self.assertEqual(preview['feed_upper_bound'], 0.0)
+        self.assertEqual(preview['mode'], 'parking_sensor')
+        self.assertEqual(preview['phase'], 'feed_complete')
+
+    def test_sensor_feed_requires_parking_sensor_to_detect_filament(self):
+        ace = make_motion_ace(trigger_after_feed_calls=1)
+        ace.parking_sensor_enabled = True
+        ace._feed = lambda _index, length, _speed, stop_sensor=None: (
+            ace.feed_lengths.append(float(length))
+            or {"stopped_by_sensor": True})
+
+        with self.assertRaisesRegex(RuntimeError, "五通传感器未检测到耗材"):
+            ace._calibrate_feed(0)
+
+        self.assertEqual(ace.feed_lengths, [20.0])
+        self.assertIsNone(ace._calibration_preview)
+
     def test_parking_distance_uses_feed_upper_bound_bowden_and_margin(self):
         result = ace_driver.calculate_parking_distance(
             1205, 190, 20, 1600)
@@ -470,6 +557,8 @@ class AceCalibrationDataTests(unittest.TestCase):
             "SAVE_VARIABLE VARIABLE=ace_calibration",
             ace.gcode.scripts[-1],
         )
+        self.assertIn("True", ace.gcode.scripts[-1])
+        self.assertNotIn("true", ace.gcode.scripts[-1])
 
     def test_save_rejects_record_for_different_config(self):
         ace = make_calibration_data_ace(bowden=200.0)
@@ -478,8 +567,39 @@ class AceCalibrationDataTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ace._save_calibration_record(make_calibration_record())
 
+    def test_save_failure_does_not_mark_calibration_as_persisted(self):
+        record = make_calibration_record()
+        ace = make_calibration_data_ace()
+        ace._load_calibration_record()
+        ace.gcode = FailingSaveGcode()
+
+        with self.assertRaisesRegex(RuntimeError, "saved_variables write failure"):
+            ace._save_calibration_record(record)
+
+        self.assertIsNone(ace.calibration_record)
+        self.assertFalse(ace.calibration_valid)
+        self.assertNotIn("ace_calibration", ace.variables)
+
 
 class AceCalibrationMotionTests(unittest.TestCase):
+    def test_combined_calibration_runs_feed_then_retract(self):
+        ace = make_retract_motion_ace()
+        ace._calibrate_feed = lambda index: ace._calibration_preview.update({
+            "phase": "feed_complete",
+            "source_slot": index,
+        }) or dict(ace._calibration_preview)
+        ace._calibrate_retract = lambda: ace._calibration_preview.update({
+            "phase": "retract_complete",
+            "bowden_tube_length": 190.0,
+        }) or dict(ace._calibration_preview)
+        ace._calibration_preview = {"phase": "idle", "source_slot": 0}
+        ace._calibration_phase = "idle"
+
+        result = ace._calibrate_combined(0)
+
+        self.assertEqual(result["phase"], "retract_complete")
+        self.assertEqual(result["bowden_tube_length"], 190.0)
+
     def test_calibrate_feed_without_confirm_only_previews(self):
         ace = make_motion_ace()
         gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": 0})
@@ -536,10 +656,85 @@ class AceCalibrationMotionTests(unittest.TestCase):
         self.assertEqual(preview["sensor_clear_completed"], 5.0)
         self.assertEqual(preview["sensor_clear_upper_bound"], 10.0)
         self.assertEqual(preview["retract_distance"], 12.0)
+        self.assertEqual(preview["upper_to_parking_sensor_distance"], 0.0)
+        self.assertEqual(preview["upper_to_parking_distance"], 12.0)
         self.assertEqual(preview["phase"], "retract_complete")
         self.assertEqual(
             ace.slot_positions[0], "preload_parked_estimated")
         self.assertEqual(ace.variables["ace_current_index"], -1)
+
+    def test_sensor_guided_retract_stops_then_adds_only_75mm(self):
+        ace = make_retract_motion_ace(clear_after_distance=99.0)
+        ace.parking_sensor_enabled = True
+        ace.parking_sensor_clear_move_length = 75.0
+        ace.parking_sensor_debounce_count = 3
+        ace.calibration_max_retract_length = 1500.0
+        ace._parking_present = True
+        calls = []
+
+        def sensor_present(name):
+            if name == "extruder_sensor":
+                return ace._parking_present
+            if name == "parking_sensor":
+                return ace._parking_present
+            return False
+
+        def retract(_index, length, speed, **kwargs):
+            calls.append((float(length), float(speed), kwargs))
+            if kwargs.get("stop_sensor") == "parking_sensor":
+                ace._parking_present = False
+                return {"stopped_by_sensor": True}
+            return {}
+
+        ace._sensor_present = sensor_present
+        ace._retract = retract
+
+        preview = ace._calibrate_retract()
+
+        self.assertEqual([call[0] for call in calls], [5.0, 75.0])
+        self.assertEqual(calls[0][2]["stop_when_present"], False)
+        self.assertEqual(calls[0][2]["stop_debounce_count"], 3)
+        self.assertEqual(preview["mode"], "parking_sensor")
+        self.assertEqual(preview["parking_distance"], 75.0)
+        self.assertEqual(preview["parking_offset"], 75.0)
+        self.assertEqual(preview["upper_to_parking_sensor_distance"], 5.0)
+        self.assertEqual(preview["upper_to_parking_distance"], 80.0)
+        self.assertTrue(preview["parking_sensor_cleared"])
+
+    def test_sensor_guided_retract_rejects_uncertain_final_offset(self):
+        ace = make_retract_motion_ace(clear_after_distance=99.0)
+        ace.parking_sensor_enabled = True
+        ace.parking_sensor_clear_move_length = 75.0
+        ace.calibration_max_retract_length = 1500.0
+        ace._parking_present = True
+
+        def sensor_present(name):
+            if name in ("extruder_sensor", "parking_sensor"):
+                return ace._parking_present
+            return False
+
+        def retract(_index, _length, _speed, **kwargs):
+            if kwargs.get("stop_sensor") == "parking_sensor":
+                ace._parking_present = False
+                return {"stopped_by_sensor": True}
+            return {"uncertain": True}
+
+        ace._sensor_present = sensor_present
+        ace._retract = retract
+
+        with self.assertRaisesRegex(RuntimeError, "连接状态不确定"):
+            ace._calibrate_retract()
+
+        self.assertIsNone(ace._calibration_preview)
+        self.assertEqual(ace._calibration_phase, "failed")
+
+    def test_calibration_preflight_rejects_material_at_parking_sensor(self):
+        ace = make_motion_ace()
+        ace.parking_sensor_enabled = True
+        ace._sensor_present = lambda name: name == "parking_sensor"
+
+        with self.assertRaisesRegex(RuntimeError, "五通传感器"):
+            ace._require_calibration_preflight()
 
     def test_calibration_save_without_confirm_does_not_persist(self):
         ace = make_retract_motion_ace()
@@ -559,6 +754,7 @@ class AceCalibrationMotionTests(unittest.TestCase):
         ace._calibration_preview["sensor_clear_completed"] = 5.0
         ace._calibration_preview["sensor_clear_upper_bound"] = 10.0
         ace._calibration_preview["retract_distance"] = 12.0
+        ace.retract_lengths.append(7.0)
         gcmd = FakeGcmd({"CONFIRM": 1})
 
         ace.cmd_ACE_CALIBRATION_SAVE(gcmd)
@@ -568,6 +764,19 @@ class AceCalibrationMotionTests(unittest.TestCase):
         self.assertEqual(record["parking_distance"], 12.0)
         self.assertTrue(record["valid"])
         self.assertEqual(ace._calibration_phase, "saved")
+
+    def test_calibration_save_rejects_changed_sensor_state(self):
+        ace = make_retract_motion_ace()
+        ace._calibration_preview["phase"] = "retract_complete"
+        ace._calibration_preview["sensor_clear_completed"] = 5.0
+        ace._calibration_preview["sensor_clear_upper_bound"] = 10.0
+        ace._calibration_preview["retract_distance"] = 12.0
+        gcmd = FakeGcmd({"CONFIRM": 1})
+
+        with self.assertRaisesRegex(RuntimeError, "上下传感器必须均无料"):
+            ace.cmd_ACE_CALIBRATION_SAVE(gcmd)
+
+        self.assertNotIn("ace_calibration", ace.variables)
 
 
 class AcePreloadTests(unittest.TestCase):
@@ -659,6 +868,18 @@ class AcePreloadTests(unittest.TestCase):
 
 
 class AceToolchangePositionTests(unittest.TestCase):
+    def test_unloaded_state_rejects_physical_filament_without_guessing_slot(self):
+        ace, _gcmd = make_same_tool_ace(
+            position="unknown", upper=True, lower=False)
+        ace.variables["ace_current_index"] = -1
+        gcmd = FakeGcmd({"TOOL": -1})
+
+        with self.assertRaisesRegex(RuntimeError, "保存状态为未装载"):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertFalse(any("_ACE_PRE_TOOLCHANGE" in item
+                             for item in ace.gcode.scripts))
+
     def test_toolchange_rejects_another_motion_owner_before_macros(self):
         ace, gcmd = make_cross_tool_ace()
         ace._motion_owner = "距离标定"
@@ -712,6 +933,86 @@ class AceToolchangePositionTests(unittest.TestCase):
 
 
 class AceRuntimeSafetyTests(unittest.TestCase):
+    def test_change_spool_without_confirmation_never_moves(self):
+        ace, _gcmd = make_cross_tool_ace()
+        gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": 0})
+
+        ace.cmd_ACE_CHANGE_SPOOL(gcmd)
+
+        self.assertEqual(ace.retract_calls, [])
+        self.assertIsNone(ace._motion_owner)
+        self.assertFalse(any("CUT_TIP" in script
+                             for script in ace.gcode.scripts))
+        self.assertTrue(any("CONFIRM=1" in message
+                            for message in gcmd.messages))
+
+    def test_change_spool_rejects_printing_and_paused(self):
+        for state in ("printing", "paused"):
+            with self.subTest(state=state):
+                ace, _gcmd = make_cross_tool_ace()
+                ace.printer.print_stats.state = state
+                gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": 1})
+
+                with self.assertRaisesRegex(RuntimeError, "打印或暂停"):
+                    ace.cmd_ACE_CHANGE_SPOOL(gcmd)
+
+                self.assertEqual(ace.retract_calls, [])
+                self.assertIsNone(ace._motion_owner)
+                self.assertFalse(any("CUT_TIP" in script
+                                     for script in ace.gcode.scripts))
+
+    def test_change_spool_respects_existing_motion_owner(self):
+        ace, _gcmd = make_cross_tool_ace()
+        ace._motion_owner = "距离标定"
+
+        with self.assertRaises(RuntimeError):
+            ace.cmd_ACE_CHANGE_SPOOL(
+                FakeGcmd({"INDEX": 0, "CONFIRM": 1}))
+
+        self.assertEqual(ace._motion_owner, "距离标定")
+        self.assertEqual(ace.retract_calls, [])
+
+    def test_change_spool_current_slot_does_not_retract_twice(self):
+        ace, _gcmd = make_cross_tool_ace()
+
+        ace.cmd_ACE_CHANGE_SPOOL(
+            FakeGcmd({"INDEX": 0, "CONFIRM": 1}))
+
+        park_calls = [call for call in ace.retract_calls
+                      if call[0] == "park"]
+        self.assertEqual(len(park_calls), 1)
+        self.assertEqual(park_calls[0][1:3], (0, 1200.0))
+        self.assertFalse(any(
+            call[0] == "retract" and call[2] == ace.bowden_tube_length
+            for call in ace.retract_calls))
+        self.assertEqual(ace.variables["ace_current_index"], -1)
+        self.assertIsNone(ace._motion_owner)
+
+    def test_change_spool_noncurrent_slot_uses_one_bounded_retract(self):
+        ace, _gcmd = make_cross_tool_ace()
+        ace.retract_calls = []
+
+        ace.cmd_ACE_CHANGE_SPOOL(
+            FakeGcmd({"INDEX": 2, "CONFIRM": 1}))
+
+        self.assertEqual(
+            ace.retract_calls,
+            [("retract", 2, ace.bowden_tube_length,
+              float(ace.retract_speed))],
+        )
+        self.assertIsNone(ace._motion_owner)
+
+    def test_change_spool_releases_motion_owner_after_failure(self):
+        ace, _gcmd = make_cross_tool_ace()
+        ace._retract = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(RuntimeError("simulated spool failure")))
+
+        with self.assertRaisesRegex(RuntimeError, "spool failure"):
+            ace.cmd_ACE_CHANGE_SPOOL(
+                FakeGcmd({"INDEX": 2, "CONFIRM": 1}))
+
+        self.assertIsNone(ace._motion_owner)
+
     def test_full_unload_without_confirmation_never_moves(self):
         ace, _gcmd = make_cross_tool_ace()
         gcmd = FakeGcmd({"INDEX": 0, "CONFIRM": 0})
@@ -766,6 +1067,142 @@ class AceRuntimeSafetyTests(unittest.TestCase):
         self.assertEqual(ace.retract_lengths, [])
         self.assertTrue(any("CONFIRM=1" in message
                             for message in gcmd.messages))
+
+    def test_uncertain_parking_retract_requires_manual_recovery(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace.printer.print_stats.state = "printing"
+        ace.parking_sensor_enabled = False
+        retract_attempts = []
+
+        def uncertain_retract(index, length, speed, phase):
+            retract_attempts.append((index, length, speed, phase))
+            ace._set_toolchange_phase(phase + "_FAST")
+            raise ace_driver.AceMotionUncertainError(
+                "simulated uncertain parking retract")
+
+        ace._retract_in_chunks = uncertain_retract
+
+        with self.assertRaises(ace_driver.AceMotionUncertainError):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertEqual(len(retract_attempts), 1)
+        self.assertIsNone(ace._pending_toolchange_recovery)
+        self.assertFalse(any(
+            script.startswith("ACE_CHANGE_TOOL")
+            for script in ace.gcode.scripts))
+        self.assertEqual(ace.gcode.scripts.count("PAUSE"), 1)
+        self.assertNotIn("RESUME", ace.gcode.scripts)
+        self.assertIn("OLD_BOWDEN_RETRACT_FAST", ace._toolchange_last_error)
+        self.assertIn("禁止自动重放", ace._toolchange_last_error)
+        self.assertEqual(ace.slot_positions[0], "unknown")
+        self.assertIsNone(ace._motion_owner)
+
+    def test_cutter_failure_pauses_and_cannot_repeat_cut(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace.printer.print_stats.state = "printing"
+        ace.gcode = FailingScriptGcode("CUT_TIP")
+
+        with self.assertRaisesRegex(RuntimeError, "CUT_TIP failure"):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertEqual(ace.gcode.scripts.count("CUT_TIP"), 1)
+        self.assertEqual(ace.slot_positions[0], "unknown")
+        self.assertIsNone(ace._pending_toolchange_recovery)
+        self.assertIn("CUTTING", ace._toolchange_last_error)
+        self.assertIn("PAUSE", ace.gcode.scripts)
+        self.assertNotIn("RESUME", ace.gcode.scripts)
+        self.assertIsNone(ace._motion_owner)
+
+        with self.assertRaisesRegex(RuntimeError, "位置不可信"):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+        self.assertEqual(ace.gcode.scripts.count("CUT_TIP"), 1)
+
+    def test_idle_cutter_failure_reports_without_pause(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace.gcode = FailingScriptGcode("CUT_TIP")
+
+        with self.assertRaisesRegex(RuntimeError, "CUT_TIP failure"):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertNotIn("PAUSE", ace.gcode.scripts)
+        self.assertIsNone(ace._motion_owner)
+        self.assertIn("CUTTING", ace._toolchange_last_error)
+
+    def test_sensor_conflict_pauses_active_print_and_preserves_diagnostics(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace.printer.print_stats.state = "printing"
+        ace._preload_lower = False
+
+        with self.assertRaisesRegex(RuntimeError, "下方传感器未触发"):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertIn("PAUSE", ace.gcode.scripts)
+        self.assertNotIn("RESUME", ace.gcode.scripts)
+        self.assertIn("下方传感器未触发", ace._toolchange_last_error)
+        self.assertIn("失败阶段=", ace._toolchange_last_error)
+        self.assertEqual(ace.slot_positions[0], "unknown")
+        self.assertIsNone(ace._motion_owner)
+
+    def test_same_tool_sensor_conflict_also_pauses_active_print(self):
+        ace, gcmd = make_same_tool_ace(
+            position="unknown", upper=True, lower=False)
+        ace.printer.print_stats.state = "printing"
+
+        with self.assertRaisesRegex(RuntimeError, "状态矛盾"):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertIn("PAUSE", ace.gcode.scripts)
+        self.assertNotIn("RESUME", ace.gcode.scripts)
+        self.assertIn(
+            "PREFLIGHT_SENSOR_CONFLICT", ace._toolchange_last_error)
+        self.assertEqual(ace.slot_positions[0], "unknown")
+        self.assertIsNone(ace._motion_owner)
+
+    def test_retract_failure_pauses_and_stops_feed_assist(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace.printer.print_stats.state = "printing"
+
+        def fail_retract(index, length, speed, phase):
+            ace._set_toolchange_phase(phase + "_FAST")
+            ace._feed_assist_index = 1
+            raise RuntimeError("simulated ordinary retract failure")
+
+        ace._retract_in_chunks = fail_retract
+
+        with self.assertRaisesRegex(RuntimeError, "ordinary retract failure"):
+            ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertIn(("disable_assist", 1), ace.motion_calls)
+        self.assertEqual(ace._feed_assist_index, -1)
+        self.assertEqual(ace._pending_feed_assist_restore, -1)
+        self.assertIn("PAUSE", ace.gcode.scripts)
+        self.assertNotIn("RESUME", ace.gcode.scripts)
+        self.assertIn("OLD_BOWDEN_RETRACT_FAST", ace._toolchange_last_error)
+        self.assertIsNone(ace._motion_owner)
+
+    def test_feed_failure_pauses_stops_assist_and_releases_motion(self):
+        ace, gcmd = make_cross_tool_ace()
+        ace.printer.print_stats.state = "printing"
+
+        def fail_target_load(tool, command, endless_spool_was_enabled):
+            ace._set_toolchange_phase("ACE_FEED_TO_UPPER")
+            ace._feed_assist_index = tool
+            ace._abort_toolchange(
+                tool, command, endless_spool_was_enabled,
+                "simulated bounded feed failure")
+
+        ace._park_to_toolhead = fail_target_load
+
+        ace.cmd_ACE_CHANGE_TOOL(gcmd)
+
+        self.assertIn(("disable_assist", 1), ace.motion_calls)
+        self.assertEqual(ace._feed_assist_index, -1)
+        self.assertEqual(ace._pending_feed_assist_restore, -1)
+        self.assertIn("PAUSE", ace.gcode.scripts)
+        self.assertNotIn("RESUME", ace.gcode.scripts)
+        self.assertIn("ACE_FEED_TO_UPPER", ace._toolchange_last_error)
+        self.assertEqual(ace.slot_positions[1], "unknown")
+        self.assertIsNone(ace._motion_owner)
 
     def test_abort_active_feed_requests_protocol_stop(self):
         ace = make_motion_ace()

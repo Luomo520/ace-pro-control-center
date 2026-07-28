@@ -350,6 +350,16 @@ class AutoDryingLifecycleTests(unittest.TestCase):
         self.assertEqual(attempts, ["drying", "drying", "drying"])
         self.assertEqual(ace._auto_drying_retry_count, 3)
 
+    def test_exhausted_stop_retries_resume_after_long_backoff(self):
+        ace = running_auto_ace(temperature=60, materials=["ABS"])
+        ace._auto_drying_stop_required = True
+        ace._auto_drying_retry_count = 3
+        ace._auto_drying_next_retry = 30.0
+
+        self.assertFalse(ace._auto_drying_can_retry(329.0))
+        self.assertTrue(ace._auto_drying_can_retry(330.0))
+        self.assertEqual(ace._auto_drying_retry_count, 0)
+
     def test_late_start_success_after_terminal_state_is_stopped(self):
         ace = make_auto_ace(enabled=True, materials=["ABS"])
         ace.max_dryer_temperature = 65

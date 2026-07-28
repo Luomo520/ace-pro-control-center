@@ -53,6 +53,24 @@ def make_ace(intermittent):
 
 
 class AceContinuousFeedTests(unittest.TestCase):
+    def test_configured_serial_path_is_used_without_autodiscovery(self):
+        ace = object.__new__(ace_driver.BunnyAce)
+        ace.serial_name = "/dev/serial/by-id/usb-ANYCUBIC_ACE_1-if00"
+        ace.find_com_port = lambda _name: self.fail(
+            "configured serial path must not trigger autodiscovery")
+
+        self.assertEqual(
+            ace._resolve_serial_port(),
+            "/dev/serial/by-id/usb-ANYCUBIC_ACE_1-if00",
+        )
+
+    def test_auto_serial_path_uses_discovery(self):
+        ace = object.__new__(ace_driver.BunnyAce)
+        ace.serial_name = "auto"
+        ace.find_com_port = lambda name: "/dev/ttyACM7" if name == "ACE" else None
+
+        self.assertEqual(ace._resolve_serial_port(), "/dev/ttyACM7")
+
     def test_stop_ready_timeout_covers_slow_motion_duration(self):
         ace = make_ace(intermittent=False)
         ace.ace_stop_ready_timeout = 25.0
@@ -92,6 +110,51 @@ class AceContinuousFeedTests(unittest.TestCase):
 
         self.assertTrue(result["stopped_by_sensor"])
         self.assertEqual(waits, [25.0])
+
+    def test_retract_sensor_clear_uses_stop_unwind_after_debounce(self):
+        ace = make_ace(intermittent=False)
+        ace.ace_stop_ready_timeout = 25.0
+        ace.ace_request_timeout = 5.0
+        ace._connected = True
+        ace._toolchange_context = {}
+        ace._connection_generation = 1
+        token = {
+            "response": {"code": 0},
+            "lost": False,
+            "sent_time": 0.0,
+        }
+        stop_token = {"response": {"code": 0}, "lost": False}
+        queued = []
+        stopped = []
+        sensor_reads = iter([True, False, False, False])
+        ace.send_request = lambda **_kwargs: token
+        ace._sensor_present = lambda _name: next(sensor_reads)
+        ace._queue_stop_unwind = lambda index: (
+            queued.append(index) or stop_token)
+        ace._queue_stop_feed = lambda _index: self.fail(
+            "retract must not queue stop_feed_filament")
+        ace._stop_unwind = lambda index, token=None: (
+            stopped.append((index, token)) or {"code": 0})
+        ace._stop_feed = lambda _index, token=None: self.fail(
+            "retract must not call stop_feed_filament")
+
+        def wait_for_request(_token, timeout=None, poll_callback=None):
+            for _ in range(4):
+                poll_callback()
+            return True
+
+        ace._wait_for_request = wait_for_request
+        ace.wait_ace_ready = lambda timeout=None: None
+
+        result = ace._run_ace_motion(
+            "unwind_filament", 2, 1500, 120,
+            stop_sensor="parking_sensor",
+            stop_when_present=False,
+            stop_debounce_count=3)
+
+        self.assertTrue(result["stopped_by_sensor"])
+        self.assertEqual(queued, [2])
+        self.assertEqual(stopped, [(2, stop_token)])
 
     def test_already_triggered_sensor_skips_motion(self):
         ace = make_ace(intermittent=False)
@@ -176,6 +239,22 @@ class AceContinuousFeedTests(unittest.TestCase):
         self.assertEqual(
             [call[1] for call in calls], [1000.0, 100.0, 100.0])
 
+    def test_intermittent_feed_stops_after_uncertain_segment(self):
+        ace = make_ace(intermittent=True)
+        calls = []
+
+        def feed(index, length, speed, stop_sensor=None):
+            calls.append((index, length, speed, stop_sensor))
+            return {"uncertain": True}
+
+        ace._feed = feed
+        with self.assertRaises(ace_driver.AceMotionUncertainError):
+            ace._feed_until_sensor(
+                2, "extruder_sensor", 1200, 160,
+                "送料 %.1f mm 后未触发")
+
+        self.assertEqual(len(calls), 1)
+
 
 class AceRetractModeTests(unittest.TestCase):
     def make_retract_ace(self, intermittent):
@@ -212,6 +291,34 @@ class AceRetractModeTests(unittest.TestCase):
         self.assertEqual(len(calls), 12)
         self.assertEqual(calls[:10], [(2, 100.0, 120)] * 10)
         self.assertEqual(calls[10:], [(2, 100.0, 25.0)] * 2)
+
+    def test_continuous_retract_stops_before_slow_stage_when_uncertain(self):
+        ace = self.make_retract_ace(intermittent=False)
+        calls = []
+
+        def retract(index, length, speed):
+            calls.append((index, length, speed))
+            return {"uncertain": True}
+
+        ace._retract = retract
+        with self.assertRaises(ace_driver.AceMotionUncertainError):
+            ace._retract_in_chunks(3, 1200, 120, "OLD_BOWDEN_RETRACT")
+
+        self.assertEqual(calls, [(3, 1000.0, 120)])
+
+    def test_intermittent_retract_stops_after_uncertain_chunk(self):
+        ace = self.make_retract_ace(intermittent=True)
+        calls = []
+
+        def retract(index, length, speed):
+            calls.append((index, length, speed))
+            return {"uncertain": True}
+
+        ace._retract = retract
+        with self.assertRaises(ace_driver.AceMotionUncertainError):
+            ace._retract_in_chunks(2, 1200, 120, "OLD_BOWDEN_RETRACT")
+
+        self.assertEqual(calls, [(2, 100.0, 120)])
 
     def test_zero_parking_length_uses_one_retract_request(self):
         ace = self.make_retract_ace(intermittent=False)

@@ -6,14 +6,49 @@
     layout-path="dashboard.ace-pro-card"
   >
     <template #menu>
-      <app-btn
-        v-if="showPageLink"
-        small
-        text
-        :to="{ name: 'acepro' }"
-      >
-        打开页面
-      </app-btn>
+      <div class="acepro-toolbar-menu">
+        <div
+          v-if="aceProToolchangeRecoveryRequired || aceProToolchangeActive"
+          class="acepro-toolbar-toolchange"
+          :class="{
+            'acepro-toolbar-toolchange--error': aceProToolchangeRecoveryRequired,
+            'acepro-toolbar-toolchange--active': !aceProToolchangeRecoveryRequired && aceProToolchangeActive,
+          }"
+          role="status"
+          :aria-live="aceProToolchangeRecoveryRequired ? 'assertive' : 'polite'"
+        >
+          <span class="acepro-toolbar-toolchange__dot" />
+          <span
+            v-if="aceProToolchangeRecoveryRequired"
+            class="acepro-toolbar-toolchange__label"
+          >
+            换料已停止，位置待确认
+          </span>
+          <span
+            v-else
+            class="acepro-toolbar-toolchange__label"
+          >
+            换料中：{{ aceProState.toolchange.context.phase || '准备中' }}
+          </span>
+          <app-btn
+            small
+            text
+            color="error"
+            :loading="aceProHasWait(aceProWaitQuickAction)"
+            @click="abortToolchange"
+          >
+            {{ aceProToolchangeRecoveryRequired ? '紧急停止' : '停止换料' }}
+          </app-btn>
+        </div>
+        <app-btn
+          v-if="showPageLink"
+          small
+          text
+          :to="{ name: 'acepro' }"
+        >
+          打开页面
+        </app-btn>
+      </div>
     </template>
 
     <v-card-text v-if="aceProApiLoading">
@@ -39,7 +74,7 @@
       <div class="acepro-card__header">
         <div>
           <div class="acepro-card__title">
-            ACE Pro 控制面板
+            ACE Pro 管理中心
           </div>
           <div class="acepro-card__subtitle">
             设备状态、烘干控制、料槽管理
@@ -54,44 +89,6 @@
           {{ connectionText }}
         </div>
       </div>
-
-      <v-alert
-        v-if="aceProToolchangeRecoveryRequired"
-        dense
-        outlined
-        type="error"
-        class="acepro-card__recovery"
-      >
-        <div>换料已停止，耗材位置不确定。请检查路径和上下传感器。</div>
-        <div class="acepro-recovery-actions">
-          <app-btn
-            small
-            color="error"
-            :loading="aceProHasWait(aceProWaitQuickAction)"
-            @click="abortToolchange"
-          >
-            紧急停止
-          </app-btn>
-        </div>
-      </v-alert>
-      <v-alert
-        v-else-if="aceProToolchangeActive"
-        dense
-        outlined
-        type="warning"
-        class="acepro-card__recovery"
-      >
-        <div>换料进行中：{{ aceProState.toolchange.context.phase || '准备中' }}</div>
-        <app-btn
-          small
-          text
-          color="error"
-          :loading="aceProHasWait(aceProWaitQuickAction)"
-          @click="abortToolchange"
-        >
-          停止换料
-        </app-btn>
-      </v-alert>
 
       <div class="acepro-card__top-grid">
         <section class="acepro-panel">
@@ -123,9 +120,14 @@
               <span>风扇转速</span>
               <strong>{{ aceProState.fanSpeed || 0 }}</strong>
             </div>
-            <div class="acepro-info-item">
-              <span>RFID</span>
-              <strong>{{ aceProState.rfidEnabled ? '已启用' : '未启用' }}</strong>
+            <div class="acepro-sensor-row">
+              <span>五通后传感器</span>
+              <strong
+                class="acepro-sensor"
+                :class="sensorClass(aceProState.sensors.parking.available, aceProState.sensors.parking.detected)"
+              >
+                {{ sensorText(aceProState.sensors.parking.available, aceProState.sensors.parking.detected) }}
+              </strong>
             </div>
             <div class="acepro-info-item">
               <span>当前装载</span>
@@ -287,6 +289,7 @@
               :busy="aceProHasWait(aceProWaitSlotAction)"
               :disabled="aceProBusy"
               :assist-active="aceProState.feedAssistIndex === slot.index"
+              :material-profiles="aceProState.materialProfiles"
               @primary="handleSlotPrimaryAction"
               @save="saveSlotFromEvent"
               @empty="clearSlot"
@@ -319,7 +322,7 @@
           <section class="acepro-panel acepro-panel--calibration">
             <div class="acepro-panel__header">
               <div class="acepro-panel__title">
-                距离标定与预装载
+                自动探测料管长度与预装载
               </div>
               <span class="acepro-calibration__state">{{ aceProCalibrationStatusLabel }}</span>
             </div>
@@ -343,13 +346,29 @@
                   {{ sensorText(aceProState.sensors.lower.available, aceProState.sensors.lower.detected) }}
                 </strong>
               </div>
-              <div class="acepro-info-item">
-                <span>送料结果</span>
-                <strong>{{ calibrationFeedResult }}</strong>
+              <div class="acepro-sensor-row">
+                <span>五通传感器</span>
+                <strong
+                  class="acepro-sensor"
+                  :class="sensorClass(aceProState.sensors.parking.available, aceProState.sensors.parking.detected)"
+                >
+                  {{ sensorText(aceProState.sensors.parking.available, aceProState.sensors.parking.detected) }}
+                </strong>
+              </div>
+              <div
+                v-if="aceProState.calibration.mode === 'parking_sensor'"
+                class="acepro-info-item"
+              >
+                <span>上方传感器 → 五通传感器</span>
+                <strong>{{ calibrationUpperToParkingSensorResult }}</strong>
               </div>
               <div class="acepro-info-item">
-                <span>回料结果</span>
-                <strong>{{ calibrationRetractResult }}</strong>
+                <span>{{ calibrationParkingDistanceLabel }}</span>
+                <strong>{{ calibrationUpperToParkingResult }}</strong>
+              </div>
+              <div class="acepro-info-item">
+                <span>ACE 出料口 → 五通进料口</span>
+                <strong>{{ aceProState.calibration.bowdenTubeLength.toFixed(1) }} mm</strong>
               </div>
             </div>
 
@@ -375,17 +394,9 @@
                 small
                 :disabled="aceProMotionControlsDisabled || !calibrationSensorsClear"
                 :loading="aceProHasWait(aceProWaitQuickAction)"
-                @click="calibrateFeed(calibrationSlot)"
+                @click="calibrate(calibrationSlot)"
               >
-                标定送料
-              </app-btn>
-              <app-btn
-                small
-                :disabled="aceProMotionControlsDisabled || !aceProCalibrationCanRetract"
-                :loading="aceProHasWait(aceProWaitQuickAction)"
-                @click="calibrateRetract"
-              >
-                标定回料
+                自动探测料管长度
               </app-btn>
               <app-btn
                 small
@@ -393,7 +404,7 @@
                 :loading="aceProHasWait(aceProWaitQuickAction)"
                 @click="saveCalibration"
               >
-                保存标定
+                保存探测结果
               </app-btn>
               <app-btn
                 small
@@ -401,7 +412,7 @@
                 :disabled="aceProHasWait(aceProWaitQuickAction)"
                 @click="cancelCalibration"
               >
-                取消标定
+                取消探测
               </app-btn>
               <app-btn
                 small
@@ -564,7 +575,7 @@
         outlined
         type="info"
       >
-        未检测到 ACE Pro。请确认已安装 ACEPROSV08 驱动，并已启用 Moonraker [ace_status] 组件。
+        未检测到 ACE Pro。请确认已安装 ACE Pro 管理中心驱动，并已启用 Moonraker [ace_status] 组件。
       </v-alert>
     </v-card-text>
   </collapsable-card>
@@ -606,18 +617,13 @@ export default class AceProCard extends Mixins(AceProMixin) {
     this.syncDryerTemperature()
   }
 
-  getDryerTemperatureForMaterial (material: string): number {
-    const normalized = material.trim().toUpperCase()
-    if (normalized.startsWith('ABS') || normalized.startsWith('PETG')) return 60
-    if (normalized.startsWith('PAHTCF') || normalized.startsWith('PETCF') || normalized.startsWith('PEEK')) return 60
-    return 45
-  }
-
   syncDryerTemperature () {
     const activeSlot = this.aceProSlots.find(slot => slot.isActive)
     if (!activeSlot?.material) return
 
-    const nextTemperature = this.getDryerTemperatureForMaterial(activeSlot.material)
+    const nextTemperature = activeSlot.dryingTemperature > 0
+      ? activeSlot.dryingTemperature
+      : 45
     if (!this.dryerTemperatureTouched || this.dryerTemperature === this.autoDryerTemperature) {
       this.dryerTemperature = nextTemperature
       this.autoDryerTemperature = nextTemperature
@@ -710,19 +716,25 @@ export default class AceProCard extends Mixins(AceProMixin) {
   get calibrationSensorsClear (): boolean {
     const sensors = this.aceProState.sensors
     return sensors.upper.available && sensors.lower.available &&
-      !sensors.upper.detected && !sensors.lower.detected
+      !sensors.upper.detected && !sensors.lower.detected &&
+      (!sensors.parking.available || !sensors.parking.detected)
   }
 
-  get calibrationFeedResult (): string {
+  get calibrationParkingDistanceLabel (): string {
     const calibration = this.aceProState.calibration
-    if (calibration.feedUpperBound <= 0) return '--'
-    return `${calibration.feedCompleted.toFixed(1)} / ${calibration.feedUpperBound.toFixed(1)} mm`
+    return calibration.mode === 'parking_sensor'
+      ? '上方传感器 → 五通停放点'
+      : '上方传感器 → 内部停放点'
   }
 
-  get calibrationRetractResult (): string {
-    const calibration = this.aceProState.calibration
-    if (calibration.retractDistance <= 0) return '--'
-    return `${calibration.retractDistance.toFixed(1)} mm · 停放 ${calibration.parkingDistance.toFixed(1)} mm`
+  get calibrationUpperToParkingSensorResult (): string {
+    const distance = this.aceProState.calibration.upperToParkingSensorDistance
+    return distance > 0 ? `${distance.toFixed(1)} mm` : '--'
+  }
+
+  get calibrationUpperToParkingResult (): string {
+    const distance = this.aceProState.calibration.upperToParkingDistance
+    return distance > 0 ? `${distance.toFixed(1)} mm` : '--'
   }
 
   sensorText (available: boolean, detected: boolean): string {
@@ -757,6 +769,65 @@ export default class AceProCard extends Mixins(AceProMixin) {
 <style scoped>
 .acepro-card {
   padding-top: 4px;
+}
+
+.acepro-toolbar-menu,
+.acepro-toolbar-toolchange {
+  display: flex;
+  align-items: center;
+}
+
+.acepro-toolbar-menu {
+  gap: 4px;
+  min-width: 0;
+}
+
+.acepro-toolbar-toolchange {
+  gap: 5px;
+  min-width: 0;
+  max-width: 360px;
+  min-height: 28px;
+  padding: 1px 3px 1px 8px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.acepro-toolbar-toolchange--active {
+  color: #fbbf24;
+  background: rgba(120, 53, 15, 0.36);
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
+.acepro-toolbar-toolchange--error {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.4);
+  border-color: rgba(239, 68, 68, 0.58);
+}
+
+.acepro-toolbar-toolchange__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.acepro-toolbar-toolchange__label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acepro-toolbar-toolchange ::v-deep .v-btn {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 6px;
+  font-size: 10px;
 }
 
 .acepro-card__header {
@@ -1129,18 +1200,6 @@ export default class AceProCard extends Mixins(AceProMixin) {
   font-size: 11px;
 }
 
-.acepro-card__recovery {
-  margin: 0 0 8px;
-  font-size: 11px;
-}
-
-.acepro-recovery-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
-
 .acepro-quick-actions__switch {
   display: inline-flex;
   align-items: center;
@@ -1309,6 +1368,10 @@ export default class AceProCard extends Mixins(AceProMixin) {
 }
 
 @media (max-width: 960px) {
+  .acepro-toolbar-toolchange__label {
+    max-width: 140px;
+  }
+
   .acepro-card__top-grid {
     grid-template-columns: 1fr;
   }
@@ -1327,6 +1390,24 @@ export default class AceProCard extends Mixins(AceProMixin) {
 }
 
 @media (max-width: 600px) {
+  .acepro-toolbar-menu {
+    gap: 2px;
+  }
+
+  .acepro-toolbar-toolchange {
+    gap: 3px;
+    max-width: 190px;
+    padding-left: 5px;
+  }
+
+  .acepro-toolbar-toolchange__label {
+    max-width: 82px;
+  }
+
+  .acepro-toolbar-toolchange ::v-deep .v-btn {
+    padding: 0 3px;
+  }
+
   .acepro-card__header {
     flex-direction: column;
     align-items: flex-start;

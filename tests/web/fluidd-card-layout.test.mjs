@@ -23,6 +23,24 @@ test('dashboard folds advanced ACE controls behind more features', async () => {
 })
 
 
+test('toolchange status is compact in the ACE Pro title bar', async () => {
+  const source = await readFile(
+    'fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue',
+    'utf8'
+  )
+  const menu = source.match(/<template #menu>([\s\S]*?)<\/template>/)
+
+  assert.ok(menu)
+  assert.match(menu[1], /class="acepro-toolbar-menu"/)
+  assert.match(menu[1], /aceProToolchangeRecoveryRequired \|\| aceProToolchangeActive/)
+  assert.match(menu[1], /class="acepro-toolbar-toolchange"/)
+  assert.match(menu[1], /换料已停止，位置待确认/)
+  assert.match(menu[1], /换料中：/)
+  assert.match(menu[1], /@click="abortToolchange"/)
+  assert.doesNotMatch(source, /class="acepro-card__recovery"/)
+})
+
+
 test('endless spool follows diagnostics without forced right alignment', async () => {
   const source = await readFile(
     'fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue',
@@ -48,6 +66,16 @@ test('card exposes automatic drying in status and dryer controls', async () => {
   assert.match(source, /自动跟随打印/)
   assert.match(source, /aceProAutoDryingStatusLabel/)
   assert.match(source, /toggleAceProAutoDrying/)
+})
+
+test('device status replaces RFID with the downstream five-way sensor', async () => {
+  const card = await readFile(
+    'fluidd-source-overlay/src/components/widgets/acepro/AceProCard.vue',
+    'utf8'
+  )
+
+  assert.match(card, /五通后传感器/)
+  assert.doesNotMatch(card, />RFID</)
 })
 
 
@@ -89,12 +117,14 @@ test('Fluidd card exposes the complete ACE calibration and preload workflow', as
   ])
 
   for (const label of [
-    '距离标定',
+    '自动探测料管长度',
     '冷态预装载',
-    '送料结果',
-    '回料结果',
-    '保存标定',
-    '取消标定',
+    '上方传感器 → 五通传感器',
+    'calibrationParkingDistanceLabel',
+    'calibrationUpperToParkingSensorResult',
+    'calibrationUpperToParkingResult',
+    '保存探测结果',
+    '取消探测',
     '完全卸载',
     '紧急停止',
   ]) {
@@ -128,6 +158,7 @@ test('Fluidd sends explicit confirmation for every direct filament movement', as
   assert.match(mixin, /ACE_PRELOAD[\s\S]*CONFIRM:\s*1/)
   assert.match(mixin, /ACE_CALIBRATE_FEED[\s\S]*CONFIRM:\s*1/)
   assert.match(mixin, /ACE_CALIBRATE_RETRACT[\s\S]*CONFIRM:\s*1/)
+  assert.match(mixin, /ACE_CALIBRATE[\s\S]*CONFIRM:\s*1/)
   assert.match(mixin, /ACE_FULL_UNLOAD[\s\S]*CONFIRM:\s*1/)
 
   const unload = mixin.match(/async unloadCurrentSlot \(\) \{([\s\S]*?)\n  \}/)

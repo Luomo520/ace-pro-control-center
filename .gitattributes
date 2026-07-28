@@ -10,3 +10,4 @@
 *.yml text eol=lf
 manifest.sha256 text eol=lf
 VERSION text eol=lf
+release-assets-v*/ export-ignore
