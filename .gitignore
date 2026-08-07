@@ -1,11 +1,25 @@
-.venv/
-node_modules/
-.pytest_cache/
+# Python caches and test artifacts
 __pycache__/
-*.pyc
-.build/
-.superpowers/
-test-results/
-release-assets-v*/
-.temporary/
-.playwright-cli/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp*/
+
+# Frontend and package build output
+node_modules/
+dist/
+build/
+*.egg-info/
+
+# Local environments, logs, and temporary packages
+.venv/
+venv/
+*.log
+*.tmp
+.temporary*/
+*.tar.gz
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

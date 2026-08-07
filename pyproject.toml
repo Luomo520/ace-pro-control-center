@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ace-pro-control-center"
+version = "2.5a0"
+description = "Ace Pro Control Center for generic multi-device Klipper systems"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "GPL-3.0-only"}
+dependencies = ["pyserial>=3.4"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Programming Language :: Python :: 3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ace_driver*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.cfg", "*.html", "*.css", "*.js", "*.json"]

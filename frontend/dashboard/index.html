@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>ACE Pro 管理中心 V2.5ahpha</title>
+  <link rel="stylesheet" href="./styles.css?v=V2.5ahpha">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <span class="brand-mark" aria-hidden="true">ACE</span>
+      <div>
+        <h1>ACE Pro 管理中心 <span class="product-version">V2.5ahpha</span></h1>
+        <p id="connection-summary">正在连接 Moonraker</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button id="unload-current" class="command danger" type="button" disabled>卸载当前耗材</button>
+      <button id="refresh-status" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态">↻</button>
+    </div>
+  </header>
+
+  <section id="system-strip" class="system-strip" aria-label="系统状态"></section>
+
+  <nav class="tabs" aria-label="ACE 功能" role="tablist">
+    <button class="tab active" type="button" role="tab" aria-selected="true" data-tab="overview">总览与换料</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" data-tab="inventory">库存</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" data-tab="maintenance">维护</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" data-tab="drying">烘干</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" data-tab="endless">无限续料</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" data-tab="calibration">校准</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" data-tab="diagnostics">诊断与恢复</button>
+  </nav>
+
+  <main id="workspace" tabindex="-1">
+    <section id="loading-state" class="message-state" aria-live="polite">正在读取 ACE 状态...</section>
+    <section id="error-state" class="message-state error" hidden></section>
+    <div id="view-root" hidden></div>
+  </main>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog id="confirm-dialog" class="modal">
+    <form method="dialog">
+      <header>
+        <h2 id="confirm-title">确认操作</h2>
+        <button class="icon-button" value="cancel" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div id="confirm-content" class="modal-content"></div>
+      <footer>
+        <button class="command secondary" value="cancel">取消</button>
+        <button id="confirm-submit" class="command primary" value="confirm">确认执行</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="slot-dialog" class="modal">
+    <form id="slot-form" method="dialog">
+      <header>
+        <h2 id="slot-title">槽位设置</h2>
+        <button class="icon-button" value="cancel" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div class="modal-content form-grid">
+        <input id="slot-device" name="device_id" type="hidden">
+        <input id="slot-index" name="slot" type="hidden">
+        <label>材料
+          <input name="material" list="slot-material-options" autocomplete="off">
+          <datalist id="slot-material-options"></datalist>
+        </label>
+        <label>颜色
+          <input name="color" type="color" value="#8b929a">
+        </label>
+        <label>喷嘴温度（°C）
+          <input name="target_temperature" type="number" min="0" max="400" step="1">
+        </label>
+        <p id="slot-blocker" class="inline-warning full" hidden></p>
+      </div>
+      <footer>
+        <button class="command secondary" value="cancel">取消</button>
+        <button id="slot-save" class="command primary" value="save">保存槽位</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script type="module" src="./app.js?v=V2.5ahpha"></script>
+</body>
+</html>

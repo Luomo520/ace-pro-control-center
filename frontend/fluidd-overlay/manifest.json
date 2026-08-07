@@ -1,0 +1,87 @@
+{
+  "name": "ace-pro-control-center-fluidd-overlay",
+  "version": "2.5.0-alpha.0",
+  "component": "src/components/widgets/ace-v3/AceV3Card.vue",
+  "page": "src/views/AcePro.vue",
+  "route": "/acepro",
+  "navigation_label": "ACE Pro 管理中心",
+  "shared_core": "../shared/ace-core.js",
+  "dashboard_path": "/ace-v3/",
+  "supported_versions": {
+    "minimum": "1.34.0",
+    "maximum_exclusive": "1.38.0"
+  },
+  "framework": {
+    "package_name": "fluidd",
+    "dependencies": {
+      "vue": 2,
+      "vue-router": 3,
+      "vuetify": 2,
+      "vue-property-decorator": 9
+    }
+  },
+  "required_features": {
+    "dashboard_typescript_class_component": "Vue 2 class-component Dashboard with a unique components object",
+    "layout_mmu_card": "Unique mmu-card entry in the default Dashboard layout",
+    "router_settings_route": "Unique settings route used as the route insertion anchor",
+    "navigation_system_item": "Unique system navigation item used as the navigation insertion anchor",
+    "toolchange_ace_grid": "Tool change controls with stable command, grouping, and style anchors"
+  },
+  "profiles": [
+    {
+      "name": "fluidd-1.34",
+      "minimum": "1.34.0",
+      "maximum_exclusive": "1.35.0",
+      "required_features": [
+        "dashboard_typescript_class_component",
+        "layout_mmu_card",
+        "router_settings_route",
+        "navigation_system_item",
+        "toolchange_ace_grid"
+      ]
+    },
+    {
+      "name": "fluidd-1.35",
+      "minimum": "1.35.0",
+      "maximum_exclusive": "1.36.0",
+      "required_features": [
+        "dashboard_typescript_class_component",
+        "layout_mmu_card",
+        "router_settings_route",
+        "navigation_system_item",
+        "toolchange_ace_grid"
+      ]
+    },
+    {
+      "name": "fluidd-1.36",
+      "minimum": "1.36.0",
+      "maximum_exclusive": "1.37.0",
+      "required_features": [
+        "dashboard_typescript_class_component",
+        "layout_mmu_card",
+        "router_settings_route",
+        "navigation_system_item",
+        "toolchange_ace_grid"
+      ]
+    },
+    {
+      "name": "fluidd-1.37",
+      "minimum": "1.37.0",
+      "maximum_exclusive": "1.38.0",
+      "required_features": [
+        "dashboard_typescript_class_component",
+        "layout_mmu_card",
+        "router_settings_route",
+        "navigation_system_item",
+        "toolchange_ace_grid"
+      ]
+    }
+  ],
+  "patched_source_files": {
+    "dashboard": "src/views/Dashboard.vue",
+    "layout": "src/store/layout/state.ts",
+    "router": "src/router/index.ts",
+    "navigation": "src/components/layout/AppNavDrawer.vue",
+    "toolchange": "src/components/widgets/toolhead/ToolChangeCommands.vue"
+  }
+}

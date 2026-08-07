@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>ACE Pro 管理中心 V2.5ahpha 界面模拟</title>
+  <link rel="stylesheet" href="./styles.css?v=V2.5ahpha">
+</head>
+<body>
+  <header class="sim-header">
+    <div class="sim-brand">
+      <span class="sim-brand__mark">ACE</span>
+      <div>
+        <h1>V3 多设备界面模拟</h1>
+        <p><span class="sim-live-dot"></span>本地模拟数据</p>
+      </div>
+    </div>
+
+    <div class="sim-controls" aria-label="模拟设置">
+      <div class="segmented" role="group" aria-label="界面视图">
+        <button type="button" data-view="card">Dashboard 卡片</button>
+        <button type="button" data-view="page">Fluidd 独立页</button>
+        <button type="button" data-view="standalone">备用控制页</button>
+      </div>
+
+      <label class="sim-field">
+        <span>设备数</span>
+        <select id="device-count">
+          <option value="1">1 台</option>
+          <option value="2">2 台</option>
+          <option value="3">3 台</option>
+          <option value="4">4 台</option>
+        </select>
+      </label>
+
+      <label class="sim-field">
+        <span>组合</span>
+        <select id="device-models">
+          <option value="ace1">全部 ACE1</option>
+          <option value="mixed">ACE1 + ACE2</option>
+          <option value="ace2">全部 ACE2</option>
+        </select>
+      </label>
+
+      <label class="sim-field">
+        <span>状态</span>
+        <select id="device-scenario">
+          <option value="ready">正常</option>
+          <option value="manual">手动模式</option>
+          <option value="not-ready">自动换料未就绪</option>
+          <option value="notice">工具指令提示</option>
+          <option value="busy">换料中</option>
+          <option value="offline">一台离线</option>
+          <option value="lower-bypass">下方仅监测</option>
+        </select>
+      </label>
+
+      <label class="sim-field">
+        <span>共享编码器</span>
+        <select id="encoder-scenario">
+          <option value="protect">暂停保护 · 监测中</option>
+          <option value="monitor">只读监测 · 监测中</option>
+            <option value="calibrating">关闭 · 校准中</option>
+            <option value="uncalibrated">保护 · 未校准</option>
+            <option value="not-armed">保护 · 未启用</option>
+            <option value="fault">暂停保护 · 故障</option>
+          <option value="off">已关闭</option>
+          <option value="unconfigured">未配置</option>
+        </select>
+      </label>
+
+      <button id="trigger-toolchange-notice" class="sim-action" type="button">模拟 T 指令</button>
+    </div>
+  </header>
+
+  <main id="sim-root"></main>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+  <script type="module" src="./app.js?v=V2.5ahpha"></script>
+</body>
+</html>

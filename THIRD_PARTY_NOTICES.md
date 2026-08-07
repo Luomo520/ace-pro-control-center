@@ -1,43 +1,54 @@
-# 第三方来源声明
+# Third-Party Notices
 
-本项目以 GPL-3.0 发布，并保留上游项目的许可义务和来源说明。
-
-## szkrisz/ACEPROSV08
-
-- 仓库：https://github.com/szkrisz/ACEPROSV08
-- 许可证：GPL-3.0
-- 用途：本项目 Klipper 驱动、ACE 串口协议、G-code 命令和配置结构的上游基础。
-- 本项目修改范围：在保留 GPL-3.0 来源的前提下形成独立的 Ace Pro Control Center 驱动，并增加状态模型、断联保护、标定、自动烘干、Moonraker API、Fluidd UI、中文辅助页面和事务式安装器。
+Ace Pro Control Center is licensed under the GNU General Public License version 3. It
+is a general Klipper reimplementation informed by the following GPL-3.0
+projects. Their printer-specific configurations, pins, coordinates, and macros
+are not distributed as V3 defaults.
 
 ## Kobra-S1/ACEPRO
 
-- 仓库：https://github.com/Kobra-S1/ACEPRO
-- 许可证：GPL-3.0
-- 用途：参考 ACE Pro 网页端交互、中文页面迁移基础、料卷 SVG 视觉样式。
-- 本项目修改范围：移除多设备假设，改为 Ace Pro Control Center 单设备 API 和 `INDEX` 指令。
+- Source: https://github.com/Kobra-S1/ACEPRO
+- Reviewed commit: `221f27b92f2eee39e3b8eacf7c3c3b198237b972`
+- License: GNU General Public License version 3
+- Use in V3: architecture of the multi-instance manager, protocol adapters,
+  serial supervision, ACE2 bus identity, persistence, and associated tests.
+  V3 rewrites integration for generic Klipper and configured logical ordering.
 
-## fluidd-core/fluidd
+The upstream copyright notices remain applicable to portions derived from or
+adapted from that project.
 
-- 仓库：https://github.com/fluidd-core/fluidd
-- 文档：https://docs.fluidd.xyz/
-- 许可证：GPL-3.0
-- 用途：Fluidd 仪表盘源码、布局、构建产物和小组件接入方式。
-- 本项目修改范围：增加 ACE Pro 卡片、页面入口、中文文案和相关构建产物。
+## szkrisz/ACEPROSV08
 
-## Moonraker
+- Source: https://github.com/szkrisz/ACEPROSV08
+- Reviewed commit: `0311eb375cb7f14d41a8e2029d4a6d7363c6ceba`
+- License: GNU General Public License version 3
+- Use in V3: ACE1 frame and action behavior cross-checks plus the familiar
+  four-row ACE user-interface behavior. SV08-specific pins, coordinates,
+  cutter motions, temperatures, and macros are excluded.
 
-- 仓库：https://github.com/Arksine/moonraker
-- 许可证：GPL-3.0
-- 用途：Fluidd 与 Klipper 之间的 HTTP / WebSocket 服务端接口和组件加载机制。
-- 本项目修改范围：新增独立的 `ace_status` Moonraker 组件，仅暴露 Ace Pro Control Center 状态和经过白名单校验的控制命令；未修改 Moonraker 上游源码。
+The upstream copyright notices remain applicable to portions derived from or
+adapted from that project.
 
-## Vue
+## moggieuk/Happy-Hare
 
-- 仓库：https://github.com/vuejs/core
-- 许可证：MIT
-- 用途：独立控制页面运行时。
-- 许可证全文：[`licenses/Vue-MIT.txt`](licenses/Vue-MIT.txt)
+- Source: https://github.com/moggieuk/Happy-Hare
+- Reviewed commit: `73d39aab2110deebb64dfb7899c6838a706edcea`
+- License: GNU General Public License version 3
+- Use in V3: visual information hierarchy of `config/base/mmu_parameters.cfg`
+  and the encoder mechanism described by `extras/mmu_encoder.py` and the
+  related hardware, parameter, and calibration configuration. V3 adapts only
+  generic pulse counting, millimetres-per-pulse calibration, and movement
+  detection for one shared encoder on the common filament path.
+- Excluded from V3: Happy Hare selectors, gear steppers, MMU toolheads,
+  automatic feed compensation, Spoolman integration, MMU recovery, printer
+  pins, and machine-specific motion values. The V3 encoder does not replace a
+  filament-presence switch and does not command additional feed movement.
 
-## 责任说明
+The upstream copyright notices remain applicable to portions derived from or
+adapted from that project.
 
-本项目不是 Anycubic、Fluidd、Moonraker 或上游驱动作者的官方项目。安装器不负责识别或迁移其他 ACE 驱动；安装前请备份打印机配置，并确认不会同时加载多套 `[ace]` 驱动。
+## Distribution obligations
+
+Redistributions of Ace Pro Control Center, modified or unmodified, must comply with
+GPL-3.0. Source code, this notice, the license text, and notices retained in
+individual source files must remain available as required by that license.

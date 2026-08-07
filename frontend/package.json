@@ -1,0 +1,9 @@
+{
+  "name": "ace-pro-control-center-frontend",
+  "version": "2.5.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test ../tests/frontend/*.test.mjs"
+  }
+}

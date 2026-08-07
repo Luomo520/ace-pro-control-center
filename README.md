@@ -1,353 +1,152 @@
 # Ace Pro Control Center | ACE Pro 管理中心
 
-面向 DIY Klipper 打印机的单台 ACE Pro 四色管理系统。项目提供增强 Klipper 驱动、Moonraker 受控 API、Fluidd 原生卡片、备用 `/ace.html` 控制页，以及可安装、升级、回滚和卸载的一体化字符安装器。
+面向通用 Klipper 的 Anycubic ACE 第三代多设备驱动。正式版本名为 `V2.5ahpha`，最多支持 4 台 ACE 共用一个打印头和一条耗材路径。配置中的 `driver_version: 3` 表示第三代内部配置协议，不是产品版本号。
 
-本项目不是另一套打印机网站。日常入口是 Fluidd 中的 ACE Pro 导航页和仪表盘卡片；`/ace.html` 仅用于 Fluidd 页面不可用时的备用控制和诊断。
+## 使用文档
 
-> [!IMPORTANT]
-> v1.2.0 只支持一台 ACE Pro、T0-T3 四个料槽和 DIY Klipper 打印机。本项目不兼容 `Kobra-S1/ACEPRO`，也不能与原版 `szkrisz/ACEPROSV08` 同时加载。安装器不会扫描、迁移或删除其他 ACE 驱动，安装者必须先保证 Klipper 中只有一套 ACE 驱动和一个有效的 `[ace]`。
+面向安装、配置和日常使用的完整中文说明见 [GitHub Wiki 源文件](wiki/Home.md)。新用户建议从 [从零安装到首次打印](wiki/Beginner-Tutorial.md) 开始；只进行无动作安装可阅读 [快速开始](wiki/Quick-Start.md)。启用任何送料、回抽、切刀或自动换料动作前，请先阅读 [安全与限制](wiki/Safety-and-Limitations.md)。
 
-## 界面预览
+## 当前能力
 
-### Fluidd ACE Pro 卡片
+- ACE1：JSON/CRC/RPC、状态、四槽库存、送料、回抽、助推、烘干和换料编排。
+- ACE2：共享总线、配置 UID、发现与地址绑定、状态读取；首版物理动作在 Manager 和协议层双重拒绝。
+- 组合：`ACE1+ACE1`、`ACE1+ACE2`、`ACE2+ACE2`，配置顺序固定映射 `ace0..ace3 -> T0..T15`。
+- 命令：`ACE_CHANGE_TOOL TOOL=T5`、`ACE_CHANGE_TOOL TOOL=TR`，并固定注册 `T0..T15` 与 `TR`；未就绪时提示后安全忽略。
+- 安全：单一共享路径锁、上方传感器闭环终点、可选下方监测、五通停车确认、独立送料总超时、目标槽前置检查、ACE 与挤出机协同回抽、非幂等命令不重试、打印状态与能力门禁。
+- 前端：V2 风格 Fluidd 管理卡片，多设备切换按钮，Fluidd 侧栏 `#/acepro` 完整页面，以及 `/ace-v3/` 静态备用页面。
+- API：`GET /server/ace/status`、`GET /server/ace/capabilities`、`POST /server/ace/action`。
 
-![ACE Pro Fluidd 卡片详细视图](docs/images/acepro-fluidd-card-detail.png)
+ACE1 是当前唯一具备实体设备验证条件的型号；驱动连接、只读状态、单 ACE 拓扑和前端已经部署验证，送料、回抽、切刀和自动换料仍需逐项完成真机物理动作验收。ACE2 只有协议模拟和只读实现，尚无本地实体设备验证条件。
 
-### Fluidd 完整仪表盘
+## 多 ACE 汇流拓扑
 
-![ACE Pro 卡片在 Fluidd 仪表盘中的完整视图](docs/images/acepro-fluidd-dashboard-overview.png)
+单 ACE 使用单级路径，四槽直接进入 1 个总五通，不需要一级五通。只有安装第 2 台 ACE 后才启用两级汇流：每台 ACE 使用 1 个一级五通，再共同进入 1 个总五通。因此 2/3/4 台 ACE 分别需要 3/4/5 个五通；多 ACE 两级路径已经通过本地模拟，尚未完成真机物理动作验收。
 
-## 当前开发分支安全更新（未发布）
+- 单 ACE 主路径为：`ACE 槽位 -> 总五通 -> 可选共享编码器 -> 上方传感器 -> 挤出机 -> 喷嘴`；下方传感器是可选观测点，默认不参与控制。多 ACE 才在 ACE 槽位与总五通之间增加每设备一级五通。ACE 设备内部自行完成张力调节，V3 不提供独立缓冲器节点、参数或界面。
+- 旧 `rdm_sensor_*` 配置名继续兼容，界面和文档统一称为“总五通传感器”。一级五通传感器只属于 2 至 4 台 ACE 的多设备拓扑。
+- 总五通使用 `rdm_sensor_debounce_count`；多 ACE 的一级五通共同使用 `ace_hub_sensor_debounce_count`，两者互不替代。
+- 单 ACE 的全部 `aceN_hub_*` 配置均保持为空并由运行时忽略。多 ACE 未安装一级传感器时，必须为对应 `aceN` 实测受限盲回退距离。
+- 跨设备换料必须先确认旧料已经退出当前一级分支并释放总五通，之后才允许另一台 ACE 送料。
 
-- `ace_config_version` 为配置结构提供兼容标识；缺少该键的旧配置按兼容模式加载，
-  不要求为了升级而直接覆盖现有 `ace.cfg`。
-- 上方与下方传感器分别使用 `extruder_sensor_debounce_count` 和
-  `toolhead_sensor_debounce_count` 独立消抖，送料停止与工具头到达判定不再共用
-  断料或五通传感器的消抖配置。
-- `toolchange_feed_hard_limit` 和 `toolchange_retract_hard_limit` 为送料、补偿、回料
-  与相关恢复路径提供独立绝对边界；达到硬上限会停止换料、保留失败阶段并暂停
-  正在打印的任务，不会执行 `CANCEL_PRINT`。
-- 本轮只记录静态部署验证，不代表已经完成送料、回抽、切刀或完整换料的真机
-  动作测试。实际参数值以根目录 `ace.cfg` 为唯一来源。
+## 共享编码器
 
-## v1.2.0 重大更新
+V3 可选使用一个共享耗材编码器，直接安装在总五通之后、上方传感器之前的公共路径。ACE Pro 使用直流送料电机，协议送料量只能作为固件参考，不能表示耗材真实位移；ACE 阶段编码器只判断“是否有实际移动”，上方传感器稳定触发才是唯一成功终点。上方触发后由挤出机步进电机接管，此时编码器才比较实测位移与命令距离。编码器不能判断路径中是否有料，不能替代上方或五通传感器，也不会自动追加送料或补偿打滑。
 
-- **统一产品**：驱动、Moonraker API、Fluidd 卡片和备用页统一为 Ace Pro Control Center。
-- **安全安装事务**：执行安装前归档，校验完整 `manifest.sha256`，先复制并验证旧文件，再替换目标；失败或中断时尝试恢复。
-- **完整恢复路径**：支持完整安装、仅驱动、仅卡片、强制安装、最近一次回滚、首次安装基线卸载和状态检查。
-- **配置可编辑**：`~/printer_data/config/ace.cfg` 安装为配置目录内的普通可写文件，修复目录外软链接导致的 Fluidd 锁图标。
-- **Fluidd 原生卡片**：设备、四槽库存、双传感器、烘干、换料、无限续料、手动移动、自动探测和诊断集中在 Fluidd 内。
-- **命令失败关闭**：Fluidd 和备用页只调用 Moonraker 白名单 API；API 404、网络错误、409 或 5xx 时不会退回发送原始 G-code。
-- **连续送料和回料**：默认取消固定 50/100 mm 停顿，采用快速段、传感器接近段和有限打滑补偿。
-- **换料安全状态机**：显示 `TA -> TB` 和失败阶段；不确定的切刀、送料或回抽不会盲目重放。
-- **自动探测料管长度**：一次确认动作完成送料与回料探测，二次确认后才保存结果。
-- **自动跟随打印烘干**：根据四槽材料决定安全温度，手动烘干始终保留用户所有权。
-- **材料资料**：材料名称、烘干温度和喷嘴参考温度由 `ace.cfg` 成组定义，卡片与备用页读取同一来源。
+- `encoder_sensor_pin`：共享编码器脉冲引脚；未安装时留空。内部对象名由驱动固定创建，用户无需填写。
+- `encoder_resolution`：每个脉冲对应的毫米数；`0` 表示尚未校准，配置值必须是有限的非负数。
+- `encoder_detection_length`：ACE 的每个受限窗口都会检查零脉冲；该值规定长窗口的最小脉冲门槛及挤出机跟随率检测下限，默认 `20 mm`，不是 ACE 的到位距离。`protect` 模式要求挤出机保证运动距离不小于此值。
+- `encoder_min_tracking_ratio`：只用于挤出机步进段，实测位移与命令距离之比低于该值时报告跟随不足，默认 `0.6`。
+- `encoder_mode`：`off` 完全关闭，`monitor` 只记录，`protect` 在未确认移动时中止当前动作。默认 `off`；`protect` 只有在编码器可用且已校准后才允许自动换料进入就绪状态。
+- `encoder_print_mode`：独立控制打印中连续监测；`off` 关闭，`monitor` 只记录并提示，`pause` 还会通过错误处理宏请求暂停一次。默认 `off`。
+- `encoder_print_detection_length`：打印净挤出累计到该距离仍没有新脉冲时生成故障，默认 `20 mm`，必须是有限正数。回抽与随后恢复的距离不会累计。
 
-完整能力和限制见 [功能与接口总览](docs/FEATURES.zh-CN.md)，参数与动作说明见 [驱动 v1.2.0 指南](docs/DRIVER-v1.2.0.zh-CN.md)，配置分区和五星必填项见 [配置文件规范](docs/ACE_CONFIG_SPECIFICATION.zh-CN.md)。
+编码器校准采用三段式人工测量：每段默认准确移动 `150 mm`，默认完成 `3` 段，并分别记录脉冲数与 `mm/脉冲`。段间最大偏差不超过 `5%` 时通过；大于 `5%` 且不超过 `10%` 时显示警告并允许保存；超过 `10%`、任一段脉冲不足或数据无效时拒绝保存。校准只计算分辨率并保存到 V3 运行状态，不改写 `ace.cfg`，也不驱动 ACE 或挤出机。开始、逐段提交和取消均要求打印机待机、当前耗材已卸载、共享路径为 `empty` 且辅助送料关闭；Fluidd 控制台在脉冲增加时同步显示本段新增、本段累计和硬件累计计数。校准段长用于提高测量可信度，不得替代运行时检测窗口；ACE 动作和打印中的打滑检测仍使用 `encoder_detection_length` 与 `encoder_print_detection_length` 的短窗口。
 
-> 配置来源：仓库根目录 `ace.cfg` 是唯一可安装模板。配置规范只说明结构和
-> 安全规则，`docs/templates/ace-config-section.template.ini` 只供维护者编写未来
-> 功能区，二者都不能替代根模板或作为第二套机器参数来源。
+打印连续监测只在 `print_stats=printing`、路径已有装载工具、没有换料事务且不在校准时运行。未安装编码器时静默停用，不影响 Klipper 启动或普通打印。故障记录会保留工具、设备、路径、打印和传感器现场，并给出仅供排查的可能原因；它不会自动送料、补偿距离或恢复动作。
 
-## 兼容范围
+ACE 自动装载始终以上方传感器稳定触发为终点，并受 `upper_sensor_feed_timeout` 独立硬超时保护，默认 `30` 秒。主参考量和低速参考量均拆成受限窗口；预设参考量耗尽后仍以低速窗口继续寻找传感器，但绝不越过总超时。触发后立即停止 ACE，再由挤出机执行 `toolhead_sensor_bypass_load_length` 标定距离。模板中的 `25 mm` 只是醒目的“未校准样板”；用户完成本机重复测量并将 `toolhead_sensor_bypass_calibrated` 改为 `True` 前，自动换料保持未就绪。`toolhead_sensor_bypass: True` 是新安装默认值，表示下方传感器即使接线也只读取显示；确认该传感器长期稳定后，可显式改为 `False` 启用下方闭环。
 
-| 项目 | v1.2.0 支持情况 |
-| --- | --- |
-| 打印机 | DIY Klipper 3D 打印机 |
-| ACE Pro | 单设备 |
-| 料槽 | T0-T3 四槽 |
-| 驱动 | 本仓库内置 Ace Pro Control Center 驱动 |
-| Moonraker | 保守完整验证基线为 `0.9.3`，本仓库内置 `ace_status` 组件 |
-| Fluidd | 完整构建验证基线为 Fluidd v1.37.2 |
-| 其他 Fluidd 版本 | 安装器提示风险，可取消、仅装驱动或继续并保留回滚来源 |
-| 其他 ACE 驱动 | 不检测、不迁移、不可同时加载 |
-| 多台 ACE Pro | 不支持 |
+## 安装
 
-安装卡片会部署本项目基于 Fluidd v1.37.2 构建的完整前端。Fluidd 或 Moonraker 低于、高于或无法识别对应验证基线时，继续安装不代表已经获得完整兼容性保证。
-
-## 新用户最短安装路径
-
-### 1. 安装前确认
-
-1. 停止打印，确认没有送料、回抽、切刀或工具切换正在运行。
-2. 确认 Klipper、Moonraker 和 Fluidd 当前可以正常启动和访问。
-3. 记录 ACE 串口、上方传感器引脚、下方传感器引脚和本机切刀坐标。
-4. 确认配置中只存在一份 `[save_variables]`；需要冷态预装载时还应有一份 `[force_move] enable_force_move: True`。
-5. 确认没有加载 `Kobra-S1/ACEPRO`、原版 `szkrisz/ACEPROSV08` 或其他 `[ace]` 驱动。
-6. 使用安装 Klipper 的普通 Linux 用户登录；禁止执行 `sudo sh install.sh`，安装器会拒绝 root 身份。
+在打印机 Linux 主机上运行：
 
 ```bash
-ls -l /dev/serial/by-id/
-grep -Rni --include='*.cfg' '^\[ace\]' ~/printer_data/config
-grep -Rni --include='*.cfg' '^\[save_variables\]' ~/printer_data/config
-grep -Rni --include='*.cfg' '^\[force_move\]' ~/printer_data/config
+git clone https://github.com/Luomo520/ace-pro-control-center.git ~/ace-pro-control-center
+cd ~/ace-pro-control-center
+./installer/install.sh \
+  --non-interactive \
+  --device-count 1 \
+  --device 'ace1|/dev/serial/by-id/REPLACE_WITH_STABLE_PATH'
 ```
 
-### 2. 通过 Git 下载
+安装器会链接 Klipper extra、Moonraker 组件和独立页面，并生成或升级唯一活动配置 `ace.cfg`。`printer.cfg` 运行时只需要 `[include ace.cfg]`；`ace.cfg` 同时包含硬件拓扑、共享参数、机器钩子和机器宏，不再 include 其他 ACE 配置文件。新安装默认写入 `toolchange_mode: manual`，ACE1 默认关闭物理动作，七个必用名称绑定默认全部启用。
 
-源码目录必须与安装后的运行目录分开。不要把仓库直接克隆到 `~/ace-pro-control-center`；该路径是安装器的默认部署目标。
+首个 GitHub 公开版本的用户直接执行全新安装，不需要准备拆分配置。硬件拓扑块由安装器管理；重装时按稳定硬件身份保留每台设备的 `enabled`、`rfid_enabled` 和 `physical_actions_enabled`，同时保留用户已有的运行模式、引脚、距离、坐标和自定义宏。增删 ACE、替换型号或改变组合时重新运行同一安装命令。安装器不会重启服务或执行物理动作。
 
-安装固定的 v1.2.0：
+检测到其他 ACE 实现、冲突工具宏或来源不明的配置时，安装器会停止而不会覆盖；应先确认冲突文件的来源，再处理并重新安装。
+
+安装前可以只运行兼容性探测：
 
 ```bash
-cd ~
-git clone --branch v1.2.0 --depth 1 \
-  https://github.com/Luomo520/ace-pro-control-center.git \
-  ace-pro-control-center-source
-cd ~/ace-pro-control-center-source
-sh install.sh
+./installer/install.sh --check-compatibility \
+  --klipper-python ~/klippy-env/bin/python \
+  --fluidd-source ~/fluidd-source \
+  --fluidd-mode auto
 ```
 
-安装仓库当前 `main`：
+Klipper 采用 API 能力探测，要求其实际运行 Python `>=3.8` 且可导入 `pyserial >=3.4`。安装器自动识别现代 `~/printer_data/config` 和旧式 `~/klipper_config`；厂商目录可通过 `--klipper-home`、`--moonraker-home`、`--config-dir`、`--fluidd-home` 和 `--klipper-python` 明确指定。详细矩阵见 `docs/COMPATIBILITY.zh-CN.md`。
+
+当前能力探测已用上游 Klipper `v0.10.0`、`v0.11.0`、`v0.12.0`、`v0.13.0` 和提交 `d865997` 验证。版本号仅用于诊断，厂商固件仍必须通过实际源码 API 与运行环境检查；安装器不会自动升级 Klipper、Python、pyserial、Node 或 Fluidd。
+
+ACE2 安装必须提供明确 UID；自动发现结果尚未安全持久化，因此当前版本拒绝 `device_uid: auto`。
+
+可先验证而不写入：
 
 ```bash
-cd ~
-git clone --depth 1 \
-  https://github.com/Luomo520/ace-pro-control-center.git \
-  ace-pro-control-center-source
-cd ~/ace-pro-control-center-source
-sh install.sh
+./installer/install.sh --dry-run --non-interactive \
+  --device-count 2 \
+  --device 'ace1|/dev/serial/by-id/ACE_ONE' \
+  --device 'ace2|/dev/serial/by-id/ACE_TWO|ace2bus0|1:2:3'
 ```
 
-### 3. 选择安装范围
+使用源码版 Fluidd 集成时追加 `--fluidd-source /path/to/fluidd`。默认 `--fluidd-mode auto`：官方 Fluidd `1.34.x-1.37.x` 且源码能力匹配时补丁 Dashboard、`/acepro` 路由和侧栏入口；更旧、更新或厂商修改过的未知结构自动回退 `/ace-v3/` 独立页面。使用 `--fluidd-mode source` 可要求不兼容时直接失败，使用 `standalone` 可明确禁止源码修改。源码补丁后需要按该 Fluidd 版本自身工具链重新构建并部署 `dist`。
 
-| 菜单 | 实际行为 |
-| ---: | --- |
-| 1 | 安装/更新完整组件：驱动、配置、Moonraker、Fluidd 卡片和备用页；已有 `ace.cfg` 时保留当前内容 |
-| 2 | 仅安装/更新驱动和配置，并修复 `ace.cfg` 可编辑状态 |
-| 3 | 仅安装/更新 Fluidd 卡片、Moonraker 组件和备用页 |
-| 4 | 强制完整安装；只跳过兼容性阻断，不跳过哈希校验、归档或失败恢复 |
-| 5 | 恢复最近一次安装前状态 |
-| 6 | 卸载并恢复项目首次写入前状态 |
-| 7 | 显示版本、路径、配置文件类型和五通传感器状态 |
-| 8 | 退出 |
+Fluidd 源码集成已用官方 `1.34.4`、`1.35.1`、`1.36.4` 和 `1.37.3` 验证。`auto` 回退不会修改不兼容的 Fluidd 源码；`source` 会在安装事务写入前失败；`standalone` 始终只部署独立页面。
 
-新用户通常选择 `1`。安装向导允许上下传感器引脚留空，但在填写它们之前不要重启 Klipper。
+正式安装必须在写入前创建独立、持久化且带时间戳的安装前快照，并在安装结果中打印快照路径、恢复命令和恢复范围。该快照不能依赖安装事务结束时会删除的临时回滚目录；安装失败时自动回滚，安装成功后仍须保留快照供人工恢复。
 
-> [!WARNING]
-> 卡片安装会整体替换 `~/fluidd`，只自动保留原 `config.json`。手工主题、插件和其他额外文件不会迁移，只能从 `~/.local/share/ace-pro-control-center/old/` 归档恢复。驱动安装可能向 Klipper Python 环境安装 `pyserial==3.5`，Python 依赖不属于文件回滚范围。
-
-已有 `ace.cfg` 时默认使用 `preserve`：安装器会跳过传感器问答，不改写现有运行配置，并用安全空值生成新版 `ace.cfg.example`。安装后必须手动核对和编辑 `~/printer_data/config/ace.cfg`。
-
-### 4. 填写配置
+卸载：
 
 ```bash
-nano ~/printer_data/config/ace.cfg
+./installer/uninstall.sh
 ```
 
-至少实测并确认：
+卸载只移除 V3 自身链接和托管块，保留用户的 `ace.cfg`、`.ace-driver-v3/legacy/` 迁移归档与其他配置。
 
-| 参数 | 含义 |
-| --- | --- |
-| `serial` | ACE 的 `/dev/serial/by-id/...` 稳定路径 |
-| `extruder_sensor_pin` | 挤出机上方传感器 MCU 引脚 |
-| `toolhead_sensor_pin` | 挤出机下方传感器 MCU 引脚 |
-| `toolchange_load_length` | ACE 停放位置到上方传感器的最大送料距离 |
-| `toolchange_retract_length` | 足以把耗材退回 ACE 并释放公共通道的回抽总距离 |
-| `toolchange_feed_hard_limit` | 送料及补偿允许达到的绝对总上限，不能小于正常送料需求 |
-| `toolchange_retract_hard_limit` | 回料及相关恢复路径允许达到的绝对总上限 |
-| `bowden_tube_length` | ACE 出料口到五通进料口的实际 PTFE 长度 |
-| `toolhead_sensor_to_nozzle` | 下方传感器到喷嘴的耗材路径长度 |
-| `extruder_sensor_debounce_count` | 上方传感器到达/解除的独立连续确认次数 |
-| `toolhead_sensor_debounce_count` | 下方传感器到达/解除的独立连续确认次数 |
-| `sensor_trigger_grace_time` | 理论运动结束后继续监测传感器的时间，只延长监测而不追加移动距离 |
-| `parking_sensor_pin` | 可选五通传感器引脚；没有传感器时保持注释 |
-| `parking_sensor_clear_move_length` | 五通传感器解除后继续向 ACE 回抽的总距离 |
-| `CUT_TIP` | 本机切刀坐标和动作；模板默认注释，不能照抄其他机器 |
+## 动作前配置
 
-耗材路径：
+通用驱动不能猜测打印机坐标、温度、切刀和传感器引脚。新安装可先保持手动模式，只使用状态与库存；启用自动换料前完成：
 
-```text
-送料：ACE T0-T3 -> 五通 -> 五通传感器（可选） -> 上方传感器 -> 挤出机 -> 下方传感器 -> 喷嘴
-回收：喷嘴 <- 下方传感器 <- 挤出机 <- 上方传感器 <- 五通传感器（可选） <- 五通 <- ACE
-```
+- 在 `ace.cfg` 填写上方、下方和总五通的真实 `*_pin`；只有安装 2 至 4 台 ACE 时才填写实际设备对应的一级五通 pin。空 pin 表示不启用该传感器，内部对象名由驱动管理。
+- 需要耗材运动监测时，在总五通之后的公共路径安装编码器，先保持 `encoder_mode: off` 完成人工校准，再选择 `monitor` 或 `protect`。
+- V3 不使用尖端成型，自动换料必须通过切刀退出旧料。`cut_macro` 名称绑定默认启用，但真实切刀动作仍是注释样板；必须按本机核对坐标、方向和速度后，才能取消 `_ace_cut_filament` 实现的注释。
+- `ace.cfg` 的换料前处理、切刀、送料、回料、擦嘴、换料后处理和故障暂停七个绑定全部默认启用，并统一使用 `!!!【必用】`；缺少任一能力时自动换料不可用。前处理、切刀、擦嘴和后处理的机器动作实现仍保持整段注释，必须按本机配置并验证。上下路径传感器可读取且全部预检通过后，再将 `toolchange_mode` 改为 `automatic`。
 
-### 5. 空闲时重启
+LOAD/UNLOAD 宏只进入驱动的传感器路径控制器；实时停止、分段送料和交替回抽不由 Jinja 宏循环实现。传感器或必用宏缺失时连接和状态读取仍可用，但自动换料会保持“尚未就绪”。`require_cut_hook` 默认开启；它和 `cut_macro` 绑定只声明自动换料必须使用哪个宏，不会启用任何样板坐标。只有取消对应 `[gcode_macro _ace_cut_filament]` 实现的注释后，切刀动作才可能被调用。
 
-安装器不会自动重启服务，也不会执行任何机械动作。确认打印机没有打印或暂停任务后：
+单 ACE 没有总五通传感器时，`toolchange_retract_length` 仍作为回抽依据，不读取任何一级五通字段。多 ACE 自动换料必须具备可验证的分支清空方案：总五通有效，且每台可执行物理动作的 ACE 使用一级五通传感器，或填写经过实测的 `aceN_hub_retract_length` 与 `aceN_hub_clear_move_length`。任何模板距离都不能视为通用校准结果。
+
+ACE 内置辅助送料独立于自动换料。打印中直接启用必须执行 `ACE_ENABLE_FEED_ASSIST TOOL=T0 CONFIRM=1`，停用使用 `ACE_DISABLE_FEED_ASSIST`；Fluidd 的确认对话框会自动传递该确认。自动换料装载前会先停用活动辅助送料，停用失败时中止换料。
+
+## 本地验证
 
 ```bash
-sudo systemctl restart klipper
-sudo systemctl restart moonraker
+python -m pytest -q
+node --test tests/frontend/*.test.mjs
+python scripts/test_release.py
+python scripts/validate_release.py --repo . --require-frontend
+bash scripts/test_installer.sh
 ```
 
-### 6. 无动作验证
+Windows Git Bash 只能执行安装器 dry-run；真实符号链接安装、卸载和回滚仍需在 Linux/Klipper 主机验证。
+
+当前本地源码基线为 Python `368 passed`（另有 `3 subtests passed`）、前端 Node `55 passed`、发布契约 `27 passed`，完整发布树校验与 Python 编译检查通过。Linux 安装、重复安装、卸载、冲突回滚、旧配置迁移和 Fluidd 模式回退已在打印机 `/tmp` 隔离目录通过集成测试；两级五通、共享编码器、单 ACE 拓扑和前端已经部署到目标打印机并完成只读验证。目标打印机只有 1 台 ACE，因此这些结果不代表多 ACE 或任何送料、回抽、切刀、换料动作已经通过真机验收。
+
+## 本机多设备界面模拟
+
+在项目根目录启动静态服务：
 
 ```bash
-sh ~/ace-pro-control-center-source/ui-installer.sh --status
-test -f ~/printer_data/config/ace.cfg && \
-  test ! -L ~/printer_data/config/ace.cfg && \
-  test -w ~/printer_data/config/ace.cfg && echo 'ace.cfg 可编辑'
-systemctl --no-pager --full status klipper moonraker
-curl -fsS http://127.0.0.1:7125/server/ace/capabilities
-curl -fsS http://127.0.0.1:7125/server/ace/status
+python -m http.server 8770 --bind 127.0.0.1
 ```
 
-浏览器入口：
+打开 `http://127.0.0.1:8770/frontend/simulator/`。模拟器包含 Fluidd Dashboard 卡片、Fluidd 侧栏完整页和 `/ace-v3/` 备用控制页，可切换 1-4 台设备、ACE1/ACE2 组合、连接状态、两级五通和共享编码器状态。所有交互只修改浏览器内存中的模拟状态，不连接 Moonraker，也不会向打印机发送命令。
 
-```text
-http://打印机IP/
-http://打印机IP/ace.html
-http://打印机IP:7125/server/ace/status
-```
+## 上游来源
 
-先确认 Fluidd、Moonraker API、ACE 连接和两个传感器状态正常，再由现场用户执行短距离送料、回抽、切刀空载检查和完整换料。安装器不会替用户触发这些动作。
+- 后端架构参考：[Kobra-S1/ACEPRO](https://github.com/Kobra-S1/ACEPRO) `221f27b92f2eee39e3b8eacf7c3c3b198237b972`
+- ACE1 行为与界面参考：[szkrisz/ACEPROSV08](https://github.com/szkrisz/ACEPROSV08) `0311eb375cb7f14d41a8e2029d4a6d7363c6ceba`
+- 配置排版与编码器机制参考：[moggieuk/Happy-Hare](https://github.com/moggieuk/Happy-Hare) `73d39aab2110deebb64dfb7899c6838a706edcea`
+- 许可证：GPL-3.0-only，详见 `THIRD_PARTY_NOTICES.md`。
 
-当前开发分支的配置版本、独立消抖和绝对硬上限只完成静态部署验证；在现场用户
-明确开始动作测试前，不应把“服务正常、配置可解析”描述为机械功能已经验证。
-
-完整逐步教程见 [安装、配置、验证、升级、回滚、卸载与排障](docs/INSTALL.zh-CN.md)。
-
-## 自动跟随打印烘干
-
-- 全部 PLA：45°C。
-- PLA 与其他材料混装：50°C，保护 PLA，并提示其他材料烘干效果可能受限。
-- 未知材料：45°C，并提示烘干效果可能受限。
-- 高温材料：60°C，包括 ABS、ABSCF、PETG、PAHTCF、PETCF 和 PEEK。
-- 最终温度不会超过 `max_dryer_temperature`。
-- 手动启动的烘干不会被自动停止，也不会被自动功能接管。
-- 打印开始后自动启动；暂停时保持；完成、取消、错误或待机后停止自动拥有的任务。
-- USB 断联或烘干命令失败不取消打印，驱动按 30 秒退避、最多三次重试。
-
-完整状态机见 [自动跟随打印烘干流程](docs/AUTO_DRYING_FLOW.zh-CN.md)。
-
-## 自动探测、预装载和完全卸载
-
-普通 T0-T3 始终送入喷嘴。`ACE_PRELOAD` 是待机维护命令，只冷态送到下方传感器，不能替代正常换料。
-
-开始自动探测前，打印机必须待机、ACE 已连接并处于就绪状态，而且上下传感器必须均无料。优先使用 Fluidd 卡片中的“自动探测料管长度”；动作开始和保存结果会分别确认。
-
-```text
-ACE_CALIBRATE INDEX=n CONFIRM=1
-ACE_CALIBRATION_SAVE CONFIRM=1
-ACE_CALIBRATION_CANCEL
-ACE_PRELOAD INDEX=n CONFIRM=1
-ACE_FULL_UNLOAD INDEX=n CONFIRM=1
-```
-
-高级诊断还可分别运行：
-
-```text
-ACE_CALIBRATE_FEED INDEX=n CONFIRM=1
-ACE_CALIBRATE_RETRACT CONFIRM=1
-```
-
-有五通传感器时，界面显示“上方传感器到五通传感器”和“上方传感器到五通停放点”；没有五通传感器时显示“上方传感器到内部停放点”。状态 `preload_parked_estimated` 只表示估算的预停放位置，不是毫米级绝对位置。
-
-修改 `bowden_tube_length`、五通传感器模式、停放偏移或标定格式后，旧结果会过期。旧版位置状态升级时只迁移当前唯一能确认的槽位，其他槽位标记为 `unknown`。
-
-## 升级
-
-源码目录跟随 `main`：
-
-```bash
-cd ~/ace-pro-control-center-source
-git pull --ff-only
-sh install.sh
-```
-
-切换到固定标签：
-
-```bash
-cd ~/ace-pro-control-center-source
-git fetch --tags --force
-git checkout v1.2.0
-sh install.sh
-```
-
-菜单 `1` 默认保留当前 `ace.cfg`。新版模板始终写入 `~/ace-pro-control-center/ace.cfg.example`；只有明确执行以下命令，或为自动化设置 `ACE_CC_CONFIG_MODE=replace`，才会用新模板替换运行配置：
-
-```bash
-sh ui-installer.sh --install-new-config
-```
-
-`ACE_CC_CONFIG_MODE` 只允许 `preserve` 或 `replace`。`replace` 会覆盖现有运行配置，只应在已经备份并准备重新填写所有机器参数时使用。
-
-直接使用 CLI 执行安装、替换配置、回滚或卸载时仍会要求确认；只有把 `--yes` 放在操作参数前才跳过确认。非交互普通安装遇到 Fluidd/Moonraker 版本风险会失败，只有明确使用 `--install-force` 才继续完整安装。
-
-## 回滚与卸载
-
-安装、回滚和卸载前都会建立归档：
-
-```text
-~/.local/share/ace-pro-control-center/old/YYYYMMDD-HHMMSS-PID/
-```
-
-最近一次回滚：
-
-```bash
-cd ~/ace-pro-control-center-source
-sh ui-installer.sh --rollback-latest
-```
-
-根据提示确认，或在无人值守且已经核对归档时执行 `sh ui-installer.sh --yes --rollback-latest`。
-
-卸载并恢复首次安装前基线：
-
-```bash
-cd ~/ace-pro-control-center-source
-sh uninstall.sh
-```
-
-仅恢复驱动或卡片范围：
-
-```bash
-sh ui-installer.sh --uninstall-driver
-sh ui-installer.sh --uninstall-card
-```
-
-回滚和卸载同样不会自动重启服务。完成后先确认打印机空闲，再重启 Klipper 和 Moonraker。
-
-## 常见故障快速入口
-
-| 症状 | 第一处理步骤 |
-| --- | --- |
-| Fluidd 空白 | 不执行机械动作，运行 `--rollback-latest`，再检查 Fluidd 版本、文件权限和 Service Worker 缓存 |
-| Fluidd 无 ACE 卡片 | 确认安装范围包含卡片，检查 Moonraker `[ace_status]` 和浏览器缓存 |
-| `/server/ace/status` 404 | 检查 `ace_status.py` 是否安装并确认 Moonraker 已重启 |
-| `ace.cfg` 带锁 | 重新选择完整安装或仅驱动安装，将旧外部软链接转换为普通可写文件 |
-| Klipper 无法启动 | 检查重复 `[ace]`、重复宏、串口路径和上下传感器引脚 |
-| 固定距离停顿 | 检查 `intermittent_feed: False` 和 `intermittent_retract: False` |
-| 换料失败 | 保持暂停，按控制台阶段检查切刀、上下传感器、实际耗材位置和 USB，不盲目重复 T 命令 |
-| 保存库存后恢复旧值 | 检查 `[save_variables]` 是否唯一、`saved_variables.cfg` 是否可写以及 API 返回值 |
-| 探测结果过期 | 核对管路和五通参数，确认传感器无料后重新探测并保存 |
-
-详细命令、日志位置和分支处理见 [安装教程的排障章节](docs/INSTALL.zh-CN.md#13-排障手册)。
-
-## 项目来源与许可证
-
-本仓库是社区衍生项目，不是 Anycubic、Fluidd、Moonraker 或上游驱动作者的官方发布。
-
-| 项目 | 许可证 | 用途 |
-| --- | --- | --- |
-| [szkrisz/ACEPROSV08](https://github.com/szkrisz/ACEPROSV08) | GPL-3.0 | 驱动、串口协议、G-code 和配置结构的上游基础 |
-| [Kobra-S1/ACEPRO](https://github.com/Kobra-S1/ACEPRO) | GPL-3.0 | 参考网页交互、中文流程和料卷视觉样式 |
-| [fluidd-core/fluidd](https://github.com/fluidd-core/fluidd) | GPL-3.0 | Fluidd 页面、卡片、导航、主题和构建体系 |
-| [Moonraker](https://github.com/Arksine/moonraker) | GPL-3.0 | 状态与受控命令接口 |
-| [Vue](https://github.com/vuejs/core) | [MIT](licenses/Vue-MIT.txt) | 备用页面运行时 |
-
-项目以 [GNU GPL v3.0](LICENSE) 发布。分发修改版本时必须保留对应源代码、许可证和上游来源。完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 文档导航
-
-- [v1.2.0 重大更新与发布说明](docs/RELEASE-v1.2.0.zh-CN.md)
-- [从零安装、升级、回滚、卸载与排障](docs/INSTALL.zh-CN.md)
-- [完整功能和接口边界](docs/FEATURES.zh-CN.md)
-- [驱动 v1.2.0 参数与调校](docs/DRIVER-v1.2.0.zh-CN.md)
-- [ACE 配置文件规范](docs/ACE_CONFIG_SPECIFICATION.zh-CN.md)
-- [ACE 配置功能区编写模板](docs/templates/ace-config-section.template.ini)
-- [自动跟随打印烘干流程](docs/AUTO_DRYING_FLOW.zh-CN.md)
-- [项目记忆与当前状态](docs/PROJECT_MEMORY.zh-CN.md)
-- [产品决策记录](docs/DECISIONS.zh-CN.md)
-- [开发、测试、构建与发布手册](docs/DEVELOPMENT.zh-CN.md)
-- [文档总索引](docs/DOCUMENTATION_INDEX.zh-CN.md)
-- [产品待办与优先级](docs/PRODUCT_BACKLOG.zh-CN.md)
-- [多智能体工作单模板](docs/WORK_ORDER_TEMPLATE.zh-CN.md)
-- [更新日志](CHANGELOG.md)
-- [第三方来源声明](THIRD_PARTY_NOTICES.md)
-- [GPL-3.0 许可证](LICENSE)
-
-## 安全与责任
-
-软件无法自动知道每台 DIY 打印机的切刀坐标、轴范围、传感器电平、管路长度和堵料状态。错误配置可能造成磨料、堵料、切刀或工具头碰撞以及打印失败。首次动作验证必须由了解机器结构、能随时断电或急停的现场用户完成。
+详细设计见 `docs/DECISIONS.zh-CN.md`、`ARCHITECTURE.zh-CN.md`、`CONFIGURATION.zh-CN.md`、`COMPATIBILITY.zh-CN.md`、`FRONTEND.zh-CN.md` 和 `TESTING.zh-CN.md`。
